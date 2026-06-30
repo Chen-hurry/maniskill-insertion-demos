@@ -1,0 +1,13 @@
+method: actor_critic
+policy:
+  actor_checkpoint: checkpoints/actors/latest.pt
+  critic_checkpoint: checkpoints/critics/latest.pt
+detector:
+  type: critic_risk
+  risk_threshold: 0.45
+recovery:
+  type: learned_actor
+  checkpoint: checkpoints/recovery_actors/latest.pt
+training:
+  gamma: 0.99
+  tau: 0.005

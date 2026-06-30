@@ -1,0 +1,10 @@
+method: baseline_anomalies
+detector:
+  type: visual_autoencoder
+  threshold: 0.35
+  latent_dim: 128
+recovery:
+  type: rule_based
+  max_attempts: 3
+logging:
+  save_videos: true

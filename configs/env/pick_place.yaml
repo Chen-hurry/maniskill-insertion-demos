@@ -1,0 +1,9 @@
+name: pick_place
+task_id: PickCube-v1
+max_episode_steps: 200
+observation_mode: rgbd
+control_mode: pd_ee_delta_pose
+success_threshold: 0.9
+anomalies:
+  enabled: true
+  types: [object_shift, distractor_object, camera_noise]

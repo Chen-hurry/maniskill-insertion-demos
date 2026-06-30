@@ -1,0 +1,23 @@
+[
+  {
+    "episode_id": 0,
+    "data_path": "results/pickcube_multicam_smoke/episodes/episode_000000.npz",
+    "num_steps": 100,
+    "total_reward": 3.0766707556322217,
+    "success": false,
+    "detected_cameras": [
+      "base_camera",
+      "side_camera",
+      "top_camera",
+      "wrist_camera"
+    ],
+    "missing_cameras": [],
+    "num_saved_frames": 404,
+    "video_paths": [
+      "results/pickcube_multicam_smoke/videos/base_camera/episode_000000.mp4",
+      "results/pickcube_multicam_smoke/videos/top_camera/episode_000000.mp4",
+      "results/pickcube_multicam_smoke/videos/side_camera/episode_000000.mp4",
+      "results/pickcube_multicam_smoke/videos/wrist_camera/episode_000000.mp4"
+    ]
+  }
+]
