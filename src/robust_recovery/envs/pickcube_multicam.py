@@ -37,6 +37,55 @@ def look_at(eye: list[float], target: list[float]) -> sapien.Pose:
     return sapien.Pose(mat44)
 
 
+def build_open_box(
+    scene,
+    name: str,
+    inner_half_size: tuple[float, float] = (0.021, 0.021),
+    wall_thickness: float = 0.004,
+    wall_height: float = 0.025,
+    floor_thickness: float = 0.004,
+    grid_shape: tuple[int, int] = (1, 1),
+    color: tuple[float, float, float, float] = (0.1, 0.35, 1.0, 1.0),
+    initial_pose: sapien.Pose | None = None,
+):
+    """Build an open-top collision box or grid tray centered on the table."""
+    builder = scene.create_actor_builder()
+    material = sapien.render.RenderMaterial(base_color=color)
+    cell_half_x, cell_half_y = inner_half_size
+    rows, cols = grid_shape
+    if rows < 1 or cols < 1:
+        raise ValueError(f"grid_shape must be positive, got {grid_shape}")
+
+    cell_x = cell_half_x * 2
+    cell_y = cell_half_y * 2
+    total_x = cols * cell_x + (cols + 1) * wall_thickness
+    total_y = rows * cell_y + (rows + 1) * wall_thickness
+
+    floor_half_size = [total_x / 2, total_y / 2, floor_thickness / 2]
+    floor_pose = sapien.Pose([0, 0, floor_thickness / 2])
+    builder.add_box_collision(floor_pose, floor_half_size)
+    builder.add_box_visual(floor_pose, floor_half_size, material=material)
+
+    wall_z = floor_thickness + wall_height / 2
+    x_wall_half_size = [wall_thickness / 2, total_y / 2, wall_height / 2]
+    for index in range(cols + 1):
+        x = -total_x / 2 + wall_thickness / 2 + index * (cell_x + wall_thickness)
+        pose = sapien.Pose([x, 0, wall_z])
+        builder.add_box_collision(pose, x_wall_half_size)
+        builder.add_box_visual(pose, x_wall_half_size, material=material)
+
+    y_wall_half_size = [total_x / 2, wall_thickness / 2, wall_height / 2]
+    for index in range(rows + 1):
+        y = -total_y / 2 + wall_thickness / 2 + index * (cell_y + wall_thickness)
+        pose = sapien.Pose([0, y, wall_z])
+        builder.add_box_collision(pose, y_wall_half_size)
+        builder.add_box_visual(pose, y_wall_half_size, material=material)
+
+    if initial_pose is not None:
+        builder.set_initial_pose(initial_pose)
+    return builder.build_kinematic(name=name)
+
+
 def _camera_config(uid: str, pose: sapien.Pose, width: int, height: int, **kwargs: Any) -> CameraConfig:
     signature = inspect.signature(CameraConfig)
     supported = set(signature.parameters.keys())
@@ -66,6 +115,14 @@ def _camera_config(uid: str, pose: sapien.Pose, width: int, height: int, **kwarg
 
 class PickCubeMultiCamEnv(PickCubeEnv):
     """PickCube with base/top/side fixed cameras and wrist camera."""
+
+    def _load_scene(self, options: dict):
+        super()._load_scene(options)
+        if hasattr(self, "goal_site"):
+            self._hidden_objects = [
+                obj for obj in self._hidden_objects if obj is not self.goal_site
+            ]
+            self.goal_site.show_visual()
 
     def _find_robot_link(self, names: list[str]):
         if not hasattr(self, "agent") or self.agent is None:
@@ -125,15 +182,54 @@ class PickCubeMultiCamEnv(PickCubeEnv):
         return cameras
 
 
-def register_env() -> None:
-    try:
-        register(
-            id="PickCubeMultiCam-v1",
-            entry_point="robust_recovery.envs.pickcube_multicam:PickCubeMultiCamEnv",
-            max_episode_steps=100,
+
+class PickCubeBoxMultiCamEnv(PickCubeMultiCamEnv):
+    """PickCube with fixed cameras and a visible 3x3 target tray."""
+
+    box_center = (0.03, 0.0)
+    box_floor_thickness = 0.004
+    box_grid_shape = (3, 3)
+    box_inner_half_size = (0.021, 0.021)
+    box_wall_height = 0.025
+    box_wall_thickness = 0.004
+    goal_box_follow_goal = False
+
+    @property
+    def box_cell_pitch(self) -> tuple[float, float]:
+        return (
+            self.box_inner_half_size[0] * 2 + self.box_wall_thickness,
+            self.box_inner_half_size[1] * 2 + self.box_wall_thickness,
         )
-    except Exception:
-        pass
+
+    def _load_scene(self, options: dict):
+        self.goal_thresh = 0.012
+        super()._load_scene(options)
+        self.goal_box = build_open_box(
+            self.scene,
+            name="goal_box",
+            inner_half_size=self.box_inner_half_size,
+            wall_thickness=self.box_wall_thickness,
+            wall_height=self.box_wall_height,
+            floor_thickness=self.box_floor_thickness,
+            grid_shape=self.box_grid_shape,
+            initial_pose=sapien.Pose([self.box_center[0], self.box_center[1], 0.0]),
+        )
+
+
+def register_env() -> None:
+    env_specs = [
+        ("PickCubeMultiCam-v1", "robust_recovery.envs.pickcube_multicam:PickCubeMultiCamEnv"),
+        ("PickCubeBoxMultiCam-v1", "robust_recovery.envs.pickcube_multicam:PickCubeBoxMultiCamEnv"),
+    ]
+    for env_id, entry_point in env_specs:
+        try:
+            register(
+                id=env_id,
+                entry_point=entry_point,
+                max_episode_steps=100,
+            )
+        except Exception:
+            pass
 
 
 register_env()

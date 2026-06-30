@@ -18,6 +18,10 @@ from mani_skill.examples.motionplanning.panda.motionplanner import (
 
 
 FINGER_LENGTH = 0.025
+PANDA_HOME_QPOS = np.array(
+    [0.0, np.pi / 8, 0.0, -5 * np.pi / 8, 0.0, 3 * np.pi / 4, np.pi / 4],
+    dtype=np.float32,
+)
 
 
 @dataclass
@@ -88,6 +92,10 @@ class PandaPickPlacePlanner:
         refine_scale: int = 1,
         rotate_on_approach: bool = False,
         rng_seed: int | None = None,
+        pre_place_height: float = 0.10,
+        place_height: float | None = None,
+        return_home: bool = False,
+        home_qpos: np.ndarray | None = None,
     ) -> None:
         self.env = env
         self.prefer_screw = prefer_screw
@@ -95,11 +103,17 @@ class PandaPickPlacePlanner:
         self.grasp_candidate_count = max(1, grasp_candidate_count)
         self.refine_scale = max(1, refine_scale)
         self.rotate_on_approach = rotate_on_approach
+        self.return_home = return_home
+        self.home_qpos = np.asarray(PANDA_HOME_QPOS if home_qpos is None else home_qpos, dtype=np.float32)
         self.rng = np.random.default_rng(rng_seed)
         self.last_candidate_index = 0
         self.last_candidate_label = "default"
         self.last_closing_direction: list[float] | None = None
         base_env = env.unwrapped
+        if place_height is None:
+            place_height = 0.020 if hasattr(base_env, "goal_box") and not getattr(base_env, "goal_box_follow_goal", True) else 0.035
+        self.pre_place_height = pre_place_height
+        self.place_height = place_height
         robot_base_pose = base_env.agent.robot.pose
 
         self.solver = PandaArmMotionPlanningSolver(
@@ -147,6 +161,35 @@ class PandaPickPlacePlanner:
     def _refine(self, steps: int) -> int:
         return steps * self.refine_scale
 
+    def move_to_qpos(self, target_qpos: np.ndarray, refine_steps: int = 0) -> bool:
+        """Execute a smooth joint-position return motion for the Panda arm."""
+        target_qpos = np.asarray(target_qpos, dtype=np.float32)
+        arm_dof = 7
+        if target_qpos.size != arm_dof:
+            raise ValueError(f"Expected {arm_dof} arm joints, got {target_qpos.size}.")
+
+        start_qpos = self.solver.robot.get_qpos()[0, :arm_dof].cpu().numpy().astype(np.float32)
+        max_delta = float(np.max(np.abs(target_qpos - start_qpos)))
+        n_step = max(2, int(np.ceil(max_delta / 0.015))) + refine_steps
+
+        obs = reward = terminated = truncated = info = None
+        for i in range(n_step):
+            alpha = (i + 1) / n_step
+            alpha = 0.5 - 0.5 * np.cos(np.pi * alpha)
+            qpos = (1.0 - alpha) * start_qpos + alpha * target_qpos
+            if self.solver.control_mode == "pd_joint_pos_vel":
+                action = np.hstack([qpos, np.zeros_like(qpos), self.solver.gripper_state])
+            else:
+                action = np.hstack([qpos, self.solver.gripper_state])
+            obs, reward, terminated, truncated, info = self.env.step(action)
+            self.solver.elapsed_steps += 1
+            if self.solver.print_env_info:
+                print(f"[{self.solver.elapsed_steps:3}] Env Output: reward={reward} info={info}")
+            if self.solver.vis:
+                self.solver.base_env.render_human()
+
+        return obs is not None
+
     def _run_stage(
         self,
         stage: str,
@@ -163,10 +206,14 @@ class PandaPickPlacePlanner:
         self,
         goal_pos: np.ndarray,
         lift_height: float = 0.12,
-        pre_place_height: float = 0.10,
-        place_height: float = 0.035,
+        pre_place_height: float | None = None,
+        place_height: float | None = None,
     ) -> list[tuple[str, np.ndarray, PickPlaceWaypoints]]:
         env = self.env.unwrapped
+        if pre_place_height is None:
+            pre_place_height = self.pre_place_height
+        if place_height is None:
+            place_height = self.place_height
         if not all(hasattr(env, name) for name in ("agent", "cube")):
             return []
 
@@ -301,7 +348,12 @@ class PandaPickPlacePlanner:
         )
         if waypoints is not None:
             return waypoints
-        return build_pick_place_waypoints(obj_pos, goal_pos)
+        return build_pick_place_waypoints(
+            obj_pos,
+            goal_pos,
+            pre_place_height=self.pre_place_height,
+            place_height=self.place_height,
+        )
 
     def pick_and_place(
         self,
@@ -343,6 +395,11 @@ class PandaPickPlacePlanner:
         self.solver.open_gripper(t=self._refine(open_steps))
         completed.append("open_gripper")
 
+        if self.return_home:
+            if not self.move_to_qpos(self.home_qpos, refine_steps=self._refine(4)):
+                return PlanningResult(False, "return_home", completed)
+            completed.append("return_home")
+
         return PlanningResult(
             True,
             None,
@@ -351,6 +408,8 @@ class PandaPickPlacePlanner:
                 "grasp_candidate_index": self.last_candidate_index,
                 "grasp_candidate_label": self.last_candidate_label,
                 "closing_direction": self.last_closing_direction,
+                "return_home": self.return_home,
+                "home_qpos": self.home_qpos.astype(float).tolist() if self.return_home else None,
             },
         )
 

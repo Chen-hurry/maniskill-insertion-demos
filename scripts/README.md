@@ -1,60 +1,23 @@
-## `scripts/test_maniskill_env.py`
+# Scripts README
 
-### English
+This directory contains command-line tools for ManiSkill smoke tests, nominal data collection, and collision diagnostics.
 
-This script is a smoke test for ManiSkill environments. It launches a specified ManiSkill task, executes a random policy sampled from the environment action space, and saves the collected trajectory data.
+## Environment
 
-For each episode, the script records:
-
-- observations
-- actions
-- rewards
-- done flags
-- environment infos
-- RGB frames, if visual observations are available
-- MP4 videos, if `--save-videos` is enabled
-
-The script is mainly used to verify that the ManiSkill environment, observation mode, control mode, data saving pipeline, and video recording pipeline work correctly before training or collecting large-scale datasets.
-
-Example:
+Run commands from the repository root:
 
 ```bash
-python scripts/test_maniskill_env.py \
-  --env-id PickCubeMultiCam-v1 \
-  --robot-uids panda \
-  --obs-mode rgb+state \
-  --control-mode pd_joint_pos \
-  --reward-mode normalized_dense \
-  --episodes 1 \
-  --max-steps 100 \
-  --output-dir results/pickcube_multicam_smoke \
-  --save-rgb-frames \
-  --save-videos
-  --expected-cameras base_camera top_camera side_camera wrist_camera
+conda activate maniskill_mp
+cd /home/fmc3-8/workspace/Chen/robust-recovery
 ```
 
-## `scripts/collect_nominal_data.py`
+The recommended control mode for motion-planning collection is `pd_joint_pos`.
 
-### English
+## `collect_nominal_data.py`
 
-This script collects nominal successful trajectories from ManiSkill environments using a motion-planning-based Panda policy. Unlike `scripts/test_maniskill_env.py`, which uses a random policy, this script calls the project motion-planning wrapper in `src/robust_recovery/planning/panda_motion_planner.py` to generate planned pick-and-place motions.
+Collects nominal demonstrations using `PandaPickPlacePlanner` from `src/robust_recovery/planning/panda_motion_planner.py`. The script records observations, planned actions, rewards, done flags, infos, metadata, RGB frames, and optional videos.
 
-For each episode, the script records:
-
-- observations
-- planned joint-position actions
-- rewards
-- done flags
-- environment infos
-- RGB frames from all available cameras
-- MP4 videos, if `--save-videos` is enabled
-- planning metadata, including initial object position, goal position, and planner result
-
-The script is mainly used to collect nominal data for robust recovery experiments. The collected trajectories can be used as normal successful demonstrations, replay references, or baseline data for later anomaly detection and recovery policy training.
-
-Because the ManiSkill motion planner executes joint-space trajectories, the recommended control mode is `pd_joint_pos`.
-
-Example:
+### Basic Multi-Camera PickCube
 
 ```bash
 python scripts/collect_nominal_data.py \
@@ -71,36 +34,216 @@ python scripts/collect_nominal_data.py \
   --expected-cameras base_camera top_camera side_camera wrist_camera
 ```
 
-### Enumerating initial states
+### Fixed 3x3 Tray Placement
 
-Use these options when you want the dataset diversity to come from different
-initial robot states and red-cube positions instead of wrist rotation during
-the approach:
+`PickCubeBoxMultiCam-v1` adds a blue 3x3 tray with collision. Each cell has `0.042m x 0.042m` inner size. The red cube is `0.04m`, so the task is intentionally precise.
 
 ```bash
 python scripts/collect_nominal_data.py \
+  --env-id PickCubeBoxMultiCam-v1 \
+  --robot-uids panda \
+  --obs-mode rgb+state \
+  --control-mode pd_joint_pos \
+  --reward-mode normalized_dense \
+  --episodes 1 \
+  --max-steps 420 \
+  --output-dir data/nominal/pickcube_box_center \
+  --cube-x -0.06 \
+  --cube-y 0.00 \
+  --cube-yaw 0.0 \
+  --goal-x 0.03 \
+  --goal-y 0.00 \
+  --goal-z 0.024 \
+  --save-rgb-frames \
+  --save-videos \
+  --expected-cameras base_camera top_camera side_camera wrist_camera
+```
+
+`goal-z=0.024` corresponds to tray floor thickness `0.004m` plus cube half-size `0.020m`.
+
+### 3x3 Goal Grid Sweep
+
+Use `--goal-grid-3x3` to place the green target at all 9 tray cell centers. If `--episodes 1` is used, the script expands it to 9 episodes automatically.
+
+```bash
+python scripts/collect_nominal_data.py \
+  --env-id PickCubeBoxMultiCam-v1 \
+  --robot-uids panda \
+  --obs-mode rgb+state \
+  --control-mode pd_joint_pos \
+  --reward-mode normalized_dense \
+  --episodes 1 \
+  --max-steps 420 \
+  --output-dir data/nominal/pickcube_box_grid_3x3 \
+  --cube-x -0.06 \
+  --cube-y 0.00 \
+  --cube-yaw 0.0 \
+  --goal-grid-3x3 \
+  --save-rgb-frames \
+  --save-videos \
+  --expected-cameras base_camera top_camera side_camera wrist_camera
+```
+
+Default grid settings:
+
+```text
+goal_grid_center = (0.03, 0.0)
+goal_grid_spacing = 0.046
+goal_grid_z = 0.024
+```
+
+The spacing is `0.042m` cell size plus `0.004m` wall thickness.
+
+### Sweeping Initial Conditions
+
+Use sweep options to vary cube position, cube yaw, robot qpos offset, and goal position:
+
+```bash
+python scripts/collect_nominal_data.py \
+  --env-id PickCubeBoxMultiCam-v1 \
+  --robot-uids panda \
+  --obs-mode rgb+state \
+  --control-mode pd_joint_pos \
+  --reward-mode normalized_dense \
+  --episodes 1 \
+  --max-steps 420 \
+  --output-dir data/nominal/pickcube_box_sweep \
+  --cube-x-values -0.06 -0.04 \
+  --cube-y-values -0.02 0.00 0.02 \
+  --cube-yaw-values 0.0 0.4 \
+  --goal-grid-3x3 \
+  --robot-qpos-offsets \
+    "0,0,0,0,0,0,0" \
+    "0,0.05,0,0,0,0,0" \
+  --save-rgb-frames \
+  --save-videos
+```
+
+When a sweep option has multiple values and `--episodes 1` is used, the script expands the episode count to cover every combination.
+
+### Return-Home Behavior
+
+By default, collected trajectories end after the robot returns to a Panda home posture:
+
+```text
+[0.0, 0.392699, 0.0, -1.963495, 0.0, 2.356194, 0.785398]
+```
+
+Disable this with:
+
+```bash
+--no-return-home
+```
+
+Use a custom 7-DoF arm target with:
+
+```bash
+--home-qpos "0,0.392699,0,-1.963495,0,2.356194,0.785398"
+```
+
+### Useful Planner Options
+
+- `--planner-place-height`: manually set TCP place height above the goal. The 3x3 tray defaults lower than the normal PickCube scene.
+- `--planner-joint-vel-limits`: scale joint velocity limits.
+- `--planner-joint-acc-limits`: scale joint acceleration limits.
+- `--prefer-rrt`: prefer RRTConnect before screw motion.
+- `--enable-grasp-diversity`: allow alternate closing directions and wrist rotations.
+- `--disable-grasp-diversity`: force the default stable approach.
+- `--refine-scale`: multiply refine/open/close/return-home step counts.
+
+## `test_box_collision_drop.py`
+
+Runs a headless free-drop diagnostic in `PickCubeBoxMultiCam-v1`. The default object is a red dynamic cube with collision. This is useful for checking whether the blue tray walls and floor are active and for studying bad insertion conditions.
+
+### Bad Position And Bad Orientation
+
+Default values intentionally drop the cube near a cell edge with nonzero roll, pitch, and yaw:
+
+```bash
+python scripts/test_box_collision_drop.py \
+  --output-dir data/diagnostics/bad_cube_drop \
+  --steps 180 \
+  --save-videos
+```
+
+### Center Correct, Yaw Wrong
+
+This tests the case where the target center is correct but the cube orientation is slightly wrong:
+
+```bash
+python scripts/test_box_collision_drop.py \
+  --output-dir data/diagnostics/center_correct_yaw_error \
+  --steps 180 \
+  --drop-x 0.03 \
+  --drop-y 0.0 \
+  --target-x 0.03 \
+  --target-y 0.0 \
+  --drop-roll 0.0 \
+  --drop-pitch 0.0 \
+  --drop-yaw 0.10 \
+  --save-videos
+```
+
+For the tight 4.2cm cells, even a small yaw error can cause the 4cm cube to hit the tray wall or divider and stop above the floor.
+
+### Perfect Center Baseline
+
+```bash
+python scripts/test_box_collision_drop.py \
+  --output-dir data/diagnostics/center_correct_yaw_zero \
+  --steps 180 \
+  --drop-x 0.03 \
+  --drop-y 0.0 \
+  --target-x 0.03 \
+  --target-y 0.0 \
+  --drop-roll 0.0 \
+  --drop-pitch 0.0 \
+  --drop-yaw 0.0 \
+  --save-videos
+```
+
+Even this free-fall baseline can fail to settle on the tray floor because impact can tilt the cube. This is expected for a very tight tray; stable insertion should be controlled and slow.
+
+### Optional Sphere Test
+
+```bash
+python scripts/test_box_collision_drop.py \
+  --drop-shape sphere \
+  --sphere-radius 0.02 \
+  --drop-x 0.03 \
+  --drop-y 0.0 \
+  --save-videos
+```
+
+## `test_maniskill_env.py`
+
+Smoke-tests a ManiSkill environment with random actions. Use it only to validate environment creation, observation format, camera output, and video saving.
+
+```bash
+python scripts/test_maniskill_env.py \
   --env-id PickCubeMultiCam-v1 \
   --robot-uids panda \
   --obs-mode rgb+state \
   --control-mode pd_joint_pos \
   --reward-mode normalized_dense \
   --episodes 1 \
-  --max-steps 300 \
-  --output-dir data/nominal/pickcube_motionplanning_multicam_sweep \
-  --cube-x-values -0.03 0.00 0.03 \
-  --cube-y-values -0.03 0.00 0.03 \
-  --robot-qpos-offsets \
-    "0,0,0,0,0,0,0" \
-    "0,0.05,0,0,0,0,0" \
-    "0,-0.05,0,0,0,0,0" \
+  --max-steps 100 \
+  --output-dir results/pickcube_multicam_smoke \
   --save-rgb-frames \
   --save-videos \
   --expected-cameras base_camera top_camera side_camera wrist_camera
 ```
 
-When any sweep option has multiple values and `--episodes 1` is used, the
-script automatically expands the episode count to cover every combination. The
-example above collects `3 x 3 x 3 = 27` episodes.
+## Outputs
 
-Each episode stores the applied `robot_qpos_offset`, actual `robot_qpos`, and
-`cube_pose` in `summary.json` and in the episode metadata.
+Most scripts write:
+
+```text
+output_dir/
+├── episodes/episode_000000.npz
+├── summary.json
+├── rgb_frames/<camera>/episode_000000/frame_000000.png
+└── videos/<camera>/episode_000000.mp4
+```
+
+Diagnostics write a similar `summary.json` plus optional camera videos.

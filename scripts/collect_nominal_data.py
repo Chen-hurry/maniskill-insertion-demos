@@ -73,10 +73,45 @@ def parse_robot_qpos_offsets(values: list[str] | None) -> list[np.ndarray]:
     return offsets
 
 
+def parse_optional_home_qpos(value: str | None) -> np.ndarray | None:
+    if value is None:
+        return None
+    qpos = np.asarray(parse_float_csv(value), dtype=np.float32)
+    if qpos.size != 7:
+        raise ValueError(f"--home-qpos must contain 7 arm joint values, got {qpos.size}: {value}")
+    return qpos
+
+
+def single_or_sweep_values(single_value: float | None, sweep_values: list[float] | None) -> list[float | None]:
+    if sweep_values is not None:
+        return sweep_values
+    if single_value is not None:
+        return [single_value]
+    return [None]
+
+
+def goal_position_values(args: argparse.Namespace) -> tuple[list[float | None], list[float | None], list[float | None]]:
+    if not args.goal_grid_3x3:
+        return (
+            single_or_sweep_values(args.goal_x, args.goal_x_values),
+            single_or_sweep_values(args.goal_y, args.goal_y_values),
+            single_or_sweep_values(args.goal_z, args.goal_z_values),
+        )
+
+    offsets = [-args.goal_grid_spacing, 0.0, args.goal_grid_spacing]
+    goal_x_values = [args.goal_grid_center_x + offset for offset in offsets]
+    goal_y_values = [args.goal_grid_center_y + offset for offset in offsets]
+    goal_z_values = single_or_sweep_values(args.goal_z, args.goal_z_values)
+    if goal_z_values == [None]:
+        goal_z_values = [args.goal_grid_z]
+    return goal_x_values, goal_y_values, goal_z_values
+
+
 def make_initial_state_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
-    cube_x_values = args.cube_x_values if args.cube_x_values is not None else [None]
-    cube_y_values = args.cube_y_values if args.cube_y_values is not None else [None]
-    cube_yaw_values = args.cube_yaw_values if args.cube_yaw_values is not None else [None]
+    cube_x_values = single_or_sweep_values(args.cube_x, args.cube_x_values)
+    cube_y_values = single_or_sweep_values(args.cube_y, args.cube_y_values)
+    cube_yaw_values = single_or_sweep_values(args.cube_yaw, args.cube_yaw_values)
+    goal_x_values, goal_y_values, goal_z_values = goal_position_values(args)
     robot_offsets = parse_robot_qpos_offsets(args.robot_qpos_offsets)
 
     configs: list[dict[str, Any]] = []
@@ -84,14 +119,20 @@ def make_initial_state_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
         for cube_x in cube_x_values:
             for cube_y in cube_y_values:
                 for cube_yaw in cube_yaw_values:
-                    configs.append(
-                        dict(
-                            robot_qpos_offset=robot_offset,
-                            cube_x=cube_x,
-                            cube_y=cube_y,
-                            cube_yaw=cube_yaw,
-                        )
-                    )
+                    for goal_x in goal_x_values:
+                        for goal_y in goal_y_values:
+                            for goal_z in goal_z_values:
+                                configs.append(
+                                    dict(
+                                        robot_qpos_offset=robot_offset,
+                                        cube_x=cube_x,
+                                        cube_y=cube_y,
+                                        cube_yaw=cube_yaw,
+                                        goal_x=goal_x,
+                                        goal_y=goal_y,
+                                        goal_z=goal_z,
+                                    )
+                                )
     return configs
 
 
@@ -134,6 +175,30 @@ def apply_initial_state_config(env, config: dict[str, Any] | None) -> dict[str, 
             cube_q = np.array([np.cos(half), 0.0, 0.0, np.sin(half)], dtype=np.float32)
         base_env.cube.set_pose(sapien.Pose(cube_p, cube_q))
         applied["cube_pose"] = np.concatenate([cube_p, cube_q]).tolist()
+
+    goal_x = config.get("goal_x")
+    goal_y = config.get("goal_y")
+    goal_z = config.get("goal_z")
+    if goal_x is not None or goal_y is not None or goal_z is not None:
+        goal_pose = base_env.goal_site.pose.sp
+        goal_p = np.asarray(goal_pose.p, dtype=np.float32).copy()
+        goal_q = np.asarray(goal_pose.q, dtype=np.float32).copy()
+        if goal_x is not None:
+            goal_p[0] = float(goal_x)
+        if goal_y is not None:
+            goal_p[1] = float(goal_y)
+        if goal_z is not None:
+            goal_p[2] = float(goal_z)
+        base_env.goal_site.set_pose(sapien.Pose(goal_p, goal_q))
+        applied["goal_pose"] = np.concatenate([goal_p, goal_q]).tolist()
+
+        if hasattr(base_env, "goal_box"):
+            if getattr(base_env, "goal_box_follow_goal", True):
+                base_env.goal_box.set_pose(sapien.Pose([goal_p[0], goal_p[1], 0.0]))
+                applied["goal_box_pose"] = [float(goal_p[0]), float(goal_p[1]), 0.0]
+            else:
+                box_pose = base_env.goal_box.pose.sp
+                applied["goal_box_pose"] = np.asarray(box_pose.p, dtype=np.float32).tolist()
 
     return applied
 
@@ -479,6 +544,7 @@ def run_episode(
     obj_pos = np.asarray(parsed["obj_pose"][:3], dtype=np.float32)
     goal_pos = np.asarray(parsed["goal_pos"], dtype=np.float32)
 
+    home_qpos = parse_optional_home_qpos(args.home_qpos)
     planner = PandaPickPlacePlanner(
         recorder,
         debug=args.debug_planner,
@@ -492,6 +558,9 @@ def run_episode(
         refine_scale=args.refine_scale,
         rotate_on_approach=args.enable_grasp_diversity and not args.disable_grasp_diversity,
         rng_seed=args.seed + episode_id,
+        place_height=args.planner_place_height,
+        return_home=args.return_home,
+        home_qpos=home_qpos,
     )
 
     planner_result = planner.pick_and_place(obj_pos=obj_pos, goal_pos=goal_pos)
@@ -521,6 +590,13 @@ def run_episode(
         planner_grasp_candidate_count=args.grasp_candidate_count,
         planner_refine_scale=args.refine_scale,
         planner_rotate_on_approach=args.enable_grasp_diversity and not args.disable_grasp_diversity,
+        planner_place_height=args.planner_place_height,
+        planner_return_home=args.return_home,
+        planner_home_qpos=home_qpos,
+        goal_grid_3x3=args.goal_grid_3x3,
+        goal_grid_center=[args.goal_grid_center_x, args.goal_grid_center_y],
+        goal_grid_spacing=args.goal_grid_spacing,
+        goal_grid_z=args.goal_grid_z,
         obj_pos_initial=obj_pos,
         goal_pos_initial=goal_pos,
         detected_cameras=detected_cameras,
@@ -616,13 +692,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--planner-joint-vel-limits", type=float, default=0.55)
     parser.add_argument("--planner-joint-acc-limits", type=float, default=0.45)
     parser.add_argument("--refine-scale", type=int, default=1)
+    parser.add_argument("--planner-place-height", type=float)
+    parser.add_argument("--return-home", dest="return_home", action="store_true", default=True)
+    parser.add_argument("--no-return-home", dest="return_home", action="store_false")
+    parser.add_argument(
+        "--home-qpos",
+        help="Comma-separated 7-DoF Panda arm qpos to return to at the end.",
+    )
     parser.add_argument("--grasp-candidate-count", type=int, default=4)
     parser.add_argument("--enable-grasp-diversity", action="store_true")
     parser.add_argument("--disable-grasp-diversity", action="store_true")
     parser.add_argument("--prefer-rrt", action="store_true")
+    parser.add_argument("--cube-x", type=float)
+    parser.add_argument("--cube-y", type=float)
+    parser.add_argument("--cube-yaw", type=float)
     parser.add_argument("--cube-x-values", nargs="*", type=float)
     parser.add_argument("--cube-y-values", nargs="*", type=float)
     parser.add_argument("--cube-yaw-values", nargs="*", type=float)
+    parser.add_argument("--goal-x", type=float)
+    parser.add_argument("--goal-y", type=float)
+    parser.add_argument("--goal-z", type=float)
+    parser.add_argument("--goal-x-values", nargs="*", type=float)
+    parser.add_argument("--goal-y-values", nargs="*", type=float)
+    parser.add_argument("--goal-z-values", nargs="*", type=float)
+    parser.add_argument("--goal-grid-3x3", action="store_true")
+    parser.add_argument("--goal-grid-center-x", type=float, default=0.03)
+    parser.add_argument("--goal-grid-center-y", type=float, default=0.0)
+    parser.add_argument("--goal-grid-spacing", type=float, default=0.046)
+    parser.add_argument("--goal-grid-z", type=float, default=0.024)
     parser.add_argument(
         "--robot-qpos-offsets",
         nargs="*",

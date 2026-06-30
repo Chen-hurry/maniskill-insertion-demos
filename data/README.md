@@ -1,15 +1,85 @@
-cat > data/README.md <<'EOF'
-# Data Directory / 数据目录说明
+# Data Directory
 
-This directory stores trajectories, RGB frames, videos, and labels used by the robust recovery experiments.
+This directory stores trajectories, RGB frames, videos, diagnostics, and metadata for robust manipulation recovery experiments.
 
-本目录用于保存鲁棒恢复实验中的轨迹数据、RGB 图像帧、视频以及标签信息。
-
-## Directory Layout / 目录结构
+## Layout
 
 ```text
 data/
-├── nominal/      # Normal executions without injected anomalies / 正常执行数据：未注入异常的任务轨迹
-├── anomalies/    # Executions with injected anomalies / 异常执行数据：包含遮挡、物体偏移、轨迹偏离等异常
-├── recovery/     # Recovery rollouts after anomaly or failure states / 恢复数据：从异常或失败状态开始的恢复轨迹
-└── demos/        # Expert, scripted, or human-corrected demonstrations / 示范数据：专家示范、脚本策略或人工纠正轨迹
+├── nominal/       # Successful or intended nominal demonstrations
+├── diagnostics/   # Collision, camera, and environment sanity checks
+├── anomalies/     # Future anomaly rollouts or injected-failure data
+├── recovery/      # Future recovery rollouts after anomaly states
+└── demos/         # Future expert, teleop, or corrected demonstrations
+```
+
+Generated data directories are usually ignored by git. Keep only lightweight documentation and configuration in version control unless a small fixture is intentionally needed.
+
+## Nominal Motion-Planning Data
+
+`collect_nominal_data.py` writes one `.npz` per episode and a `summary.json` file:
+
+```text
+data/nominal/<dataset_name>/
+├── episodes/
+│   ├── episode_000000.npz
+│   └── episode_000001.npz
+├── summary.json
+├── rgb_frames/
+│   ├── base_camera/
+│   ├── top_camera/
+│   ├── side_camera/
+│   └── wrist_camera/
+└── videos/
+    ├── base_camera/
+    ├── top_camera/
+    ├── side_camera/
+    └── wrist_camera/
+```
+
+Each episode file contains:
+
+- `episode_id`
+- `num_steps`
+- `observations`
+- `actions`
+- `rewards`
+- `dones`
+- `infos`
+- `metadata`
+
+The metadata records the environment id, camera set, seed, initial cube pose, goal pose, applied robot qpos offset, planner settings, planner result, and whether the environment reported success.
+
+## 3x3 Tray Datasets
+
+Recommended directory names:
+
+```text
+data/nominal/pickcube_box_center/
+data/nominal/pickcube_box_grid_3x3/
+data/nominal/pickcube_box_sweep/
+```
+
+Use `PickCubeBoxMultiCam-v1` when collecting data for precise placement into the blue 3x3 tray. The tray cell inner size is `0.042m x 0.042m`; the cube size is `0.04m`, so failures from small pose errors are expected and useful.
+
+## Diagnostics
+
+`test_box_collision_drop.py` writes diagnostic summaries and optional videos:
+
+```text
+data/diagnostics/<diagnostic_name>/
+├── summary.json
+└── videos/
+    ├── base_camera.mp4
+    ├── top_camera.mp4
+    ├── side_camera.mp4
+    └── wrist_camera.mp4
+```
+
+The summary contains object type, initial drop pose, target center, final pose, whether the object remained inside the target cell, and whether it settled near the expected floor height.
+
+## Notes
+
+- Large generated files should stay out of git unless explicitly needed.
+- Use `summary.json` first when checking success rates.
+- Use `videos/top_camera.mp4` first when diagnosing tray insertion and collision behavior.
