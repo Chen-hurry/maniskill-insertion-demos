@@ -94,6 +94,45 @@ goal_grid_z = 0.024
 
 The spacing is `0.042m` cell size plus `0.004m` wall thickness.
 
+
+
+### Stable Two-Panda Phone Slot Handoff
+
+`TwoPandaPhoneSlotMultiCam-v1` is the current stable phone insertion task. Use the following command as the baseline before collecting variants:
+
+```bash
+conda run -n maniskill_mp python scripts/collect_nominal_data.py \
+  --env-id TwoPandaPhoneSlotMultiCam-v1 \
+  --robot-uids panda panda \
+  --obs-mode rgb+state \
+  --control-mode pd_joint_pos \
+  --reward-mode normalized_dense \
+  --episodes 1 \
+  --max-steps 1800 \
+  --output-dir data/nominal/two_panda_phone_slot_handoff_stable \
+  --two-panda-mode handoff \
+  --handoff-angle-deg 45 \
+  --handoff-receive-mode upper_side \
+  --upper-side-receive-fraction 0.08 \
+  --cube-x -0.08 \
+  --cube-y 0.0 \
+  --goal-x 0.06 \
+  --goal-y 0.0 \
+  --print-planner-stages \
+  --save-videos \
+  --expected-cameras base_camera top_camera side_camera left_wrist_camera right_wrist_camera
+```
+
+Important notes:
+
+- `--two-panda-mode handoff` is the stable two-arm mode.
+- `--handoff-angle-deg 45` is the verified handoff angle. Tests at 50 and 60 degrees were less stable.
+- `--handoff-receive-mode upper_side --upper-side-receive-fraction 0.08` is the verified receiving grasp.
+- Keep `cube=(-0.08, 0.0)` and `goal=(0.06, 0.0)` for the nominal baseline.
+- Videos include a lower-left `S`/`F` marker. `summary.json` and `success_report.json` record the final success rate.
+
+For more visual data diversity, prefer camera/image/light/color perturbations or very small pose offsets. Large scene translations are not recommended for this scripted planner because the robot bases remain fixed and the handoff contact geometry changes.
+
 ### Sweeping Initial Conditions
 
 Use sweep options to vary cube position, cube yaw, robot qpos offset, and goal position:

@@ -72,6 +72,46 @@ Set a custom 7-DoF target with:
 --home-qpos "0,0.392699,0,-1.963495,0,2.356194,0.785398"
 ```
 
+
+
+## Two-Panda Phone-Slot Planner
+
+`TwoPandaPhoneSlotPlanner` supports the stable handoff path for `TwoPandaPhoneSlotMultiCam-v1`:
+
+```text
+right_pre_grasp
+-> right_grasp
+-> right_close_gripper
+-> right_lift_flat
+-> right_flip_handoff_45
+-> left_pre_receive
+-> left_receive
+-> left_close_gripper
+-> right_release_handoff
+-> right_retract_after_handoff
+-> left_lift_after_handoff
+-> left_calibrate_68
+-> left_calibrate_90
+-> left_pre_insert
+-> left_insert
+-> left_open_gripper
+-> right_return_home
+-> left_return_home
+```
+
+The verified configuration is:
+
+```text
+two_panda_mode = handoff
+handoff_angle_deg = 45
+handoff_receive_mode = upper_side
+upper_side_receive_fraction = 0.08
+phone initial position = (-0.08, 0.0)
+slot goal position = (0.06, 0.0)
+```
+
+This planner is rule-based and contact-sensitive. It is reliable for the tuned baseline but should not be treated as a globally robust planner over arbitrary phone/slot positions. For broad visual diversity, change camera/rendering conditions or apply image augmentation rather than moving the task far from the tuned geometry.
+
 ## Planning Options Exposed By The Collector
 
 - `--planner-joint-vel-limits`: scales joint velocity limits.

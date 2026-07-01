@@ -62,6 +62,28 @@ data/nominal/pickcube_box_sweep/
 
 Use `PickCubeBoxMultiCam-v1` when collecting data for precise placement into the blue 3x3 tray. The tray cell inner size is `0.042m x 0.042m`; the cube size is `0.04m`, so failures from small pose errors are expected and useful.
 
+
+
+## Phone-Slot Handoff Datasets
+
+Recommended stable phone-slot dataset name:
+
+```text
+data/nominal/two_panda_phone_slot_handoff_stable/
+```
+
+This dataset should be collected with `TwoPandaPhoneSlotMultiCam-v1` and the stable 45 degree handoff configuration. Each run writes:
+
+```text
+summary.json
+success_report.json
+videos/<camera>/episode_000000.mp4
+combined/combined_all_cameras.mp4
+episodes/episode_000000.npz
+```
+
+For quick visual checks, open `combined/combined_all_cameras.mp4`. The lower-left marker shows `S` for success and `F` for failure. Keep large generated datasets out of git.
+
 ## Diagnostics
 
 `test_box_collision_drop.py` writes diagnostic summaries and optional videos:

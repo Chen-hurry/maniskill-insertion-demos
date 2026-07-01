@@ -12,7 +12,11 @@ import numpy as np
 import sapien
 from tqdm import trange
 
-from robust_recovery.planning.panda_motion_planner import PandaPickPlacePlanner
+from robust_recovery.planning.panda_motion_planner import (
+    PandaPickPlacePlanner,
+    PhoneSlotPlanner,
+    TwoPandaPhoneSlotPlanner,
+)
 
 
 def to_numpy_tree(value: Any) -> Any:
@@ -90,6 +94,21 @@ def single_or_sweep_values(single_value: float | None, sweep_values: list[float]
     return [None]
 
 
+def parse_cube_xy_values(values: list[str] | None) -> list[tuple[float, float]] | None:
+    if not values:
+        return None
+    raw_values: list[str] = []
+    for value in values:
+        raw_values.extend(item.strip() for item in value.split(";") if item.strip())
+    pairs: list[tuple[float, float]] = []
+    for value in raw_values:
+        items = parse_float_csv(value)
+        if len(items) != 2:
+            raise ValueError(f"Each --cube-xy-values item must be 'x,y', got: {value}")
+        pairs.append((float(items[0]), float(items[1])))
+    return pairs
+
+
 def goal_position_values(args: argparse.Namespace) -> tuple[list[float | None], list[float | None], list[float | None]]:
     if not args.goal_grid_3x3:
         return (
@@ -108,6 +127,7 @@ def goal_position_values(args: argparse.Namespace) -> tuple[list[float | None], 
 
 
 def make_initial_state_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
+    cube_xy_values = parse_cube_xy_values(args.cube_xy_values)
     cube_x_values = single_or_sweep_values(args.cube_x, args.cube_x_values)
     cube_y_values = single_or_sweep_values(args.cube_y, args.cube_y_values)
     cube_yaw_values = single_or_sweep_values(args.cube_yaw, args.cube_yaw_values)
@@ -116,24 +136,75 @@ def make_initial_state_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
 
     configs: list[dict[str, Any]] = []
     for robot_offset in robot_offsets:
-        for cube_x in cube_x_values:
-            for cube_y in cube_y_values:
-                for cube_yaw in cube_yaw_values:
-                    for goal_x in goal_x_values:
-                        for goal_y in goal_y_values:
-                            for goal_z in goal_z_values:
-                                configs.append(
-                                    dict(
-                                        robot_qpos_offset=robot_offset,
-                                        cube_x=cube_x,
-                                        cube_y=cube_y,
-                                        cube_yaw=cube_yaw,
-                                        goal_x=goal_x,
-                                        goal_y=goal_y,
-                                        goal_z=goal_z,
-                                    )
+        cube_positions = cube_xy_values if cube_xy_values is not None else [(cube_x, cube_y) for cube_x in cube_x_values for cube_y in cube_y_values]
+        for cube_x, cube_y in cube_positions:
+            for cube_yaw in cube_yaw_values:
+                for goal_x in goal_x_values:
+                    for goal_y in goal_y_values:
+                        for goal_z in goal_z_values:
+                            configs.append(
+                                dict(
+                                    robot_qpos_offset=robot_offset,
+                                    cube_x=cube_x,
+                                    cube_y=cube_y,
+                                    cube_yaw=cube_yaw,
+                                    goal_x=goal_x,
+                                    goal_y=goal_y,
+                                    goal_z=goal_z,
                                 )
+                            )
     return configs
+
+
+def phone_insert_rotation_quat(angle_deg: float) -> np.ndarray:
+    half = -np.deg2rad(float(angle_deg)) * 0.5
+    return np.array([np.cos(half), 0.0, np.sin(half), 0.0], dtype=np.float32)
+
+
+def apply_phone_planner_options(env, args: argparse.Namespace) -> dict[str, Any]:
+    base_env = env.unwrapped
+    applied: dict[str, Any] = {}
+    if not hasattr(base_env, "planner_insert_rotation_q"):
+        return applied
+
+    if args.phone_insert_angle_deg is not None:
+        angle = float(args.phone_insert_angle_deg)
+        base_env.planner_insert_angle_deg = angle
+        base_env.planner_insert_rotation_q = tuple(phone_insert_rotation_quat(angle).astype(float).tolist())
+        applied["phone_insert_angle_deg"] = angle
+        applied["planner_insert_rotation_q"] = list(base_env.planner_insert_rotation_q)
+
+        if args.goal_z is None and hasattr(base_env, "goal_site") and hasattr(base_env, "phone_half_size"):
+            phone_half_size = np.asarray(base_env.phone_half_size, dtype=np.float32)
+            theta = np.deg2rad(angle)
+            vertical_half_extent = float(phone_half_size[0] * abs(np.sin(theta)) + phone_half_size[2] * abs(np.cos(theta)))
+            goal_pose = base_env.goal_site.pose.sp
+            goal_p = np.asarray(goal_pose.p, dtype=np.float32).copy()
+            goal_q = np.asarray(goal_pose.q, dtype=np.float32).copy()
+            goal_p[2] = float(getattr(base_env, "slot_floor_thickness", 0.0)) + vertical_half_extent
+            base_env.goal_site.set_pose(sapien.Pose(goal_p, goal_q))
+            applied["phone_angle_adjusted_goal_z"] = float(goal_p[2])
+
+    if args.phone_rotation_alphas is not None:
+        alphas = tuple(float(alpha) for alpha in args.phone_rotation_alphas)
+        if not alphas:
+            raise ValueError("--phone-rotation-alphas must contain at least one value when provided.")
+        if any(alpha <= 0.0 or alpha > 1.0 for alpha in alphas):
+            raise ValueError("--phone-rotation-alphas values must be in (0, 1].")
+        base_env.planner_rotation_alphas = alphas
+        applied["phone_rotation_alphas"] = list(alphas)
+
+    if hasattr(base_env, "planner_two_panda_mode"):
+        base_env.planner_two_panda_mode = args.two_panda_mode
+        base_env.planner_handoff_angle_deg = float(args.handoff_angle_deg)
+        base_env.planner_handoff_receive_mode = args.handoff_receive_mode
+        if args.upper_side_receive_fraction is not None:
+            base_env.planner_upper_side_receive_fraction = float(args.upper_side_receive_fraction)
+        applied["two_panda_mode"] = args.two_panda_mode
+        applied["handoff_angle_deg"] = float(args.handoff_angle_deg)
+        applied["handoff_receive_mode"] = args.handoff_receive_mode
+        applied["upper_side_receive_fraction"] = float(getattr(base_env, "planner_upper_side_receive_fraction", 0.08))
+    return applied
 
 
 def apply_initial_state_config(env, config: dict[str, Any] | None) -> dict[str, Any]:
@@ -144,8 +215,11 @@ def apply_initial_state_config(env, config: dict[str, Any] | None) -> dict[str, 
     applied: dict[str, Any] = {}
 
     robot_offset = np.asarray(config.get("robot_qpos_offset", []), dtype=np.float32)
-    if robot_offset.size:
-        qpos = base_env.agent.robot.get_qpos()[0].cpu().numpy().astype(np.float32)
+    if robot_offset.size and not np.allclose(robot_offset, 0.0):
+        target_agent = base_env.agent
+        if not hasattr(target_agent, "robot") and hasattr(base_env, "right_agent"):
+            target_agent = base_env.right_agent
+        qpos = target_agent.robot.get_qpos()[0].cpu().numpy().astype(np.float32)
         if robot_offset.size == 7:
             qpos[:7] += robot_offset
         elif robot_offset.size == qpos.size:
@@ -154,8 +228,8 @@ def apply_initial_state_config(env, config: dict[str, Any] | None) -> dict[str, 
             raise ValueError(
                 f"Robot qpos offset has size {robot_offset.size}, expected 7 or {qpos.size}."
             )
-        base_env.agent.robot.set_qpos(qpos)
-        base_env.agent.robot.set_qvel(np.zeros_like(qpos))
+        target_agent.robot.set_qpos(qpos)
+        target_agent.robot.set_qvel(np.zeros_like(qpos))
         applied["robot_qpos_offset"] = robot_offset.tolist()
         applied["robot_qpos"] = qpos.tolist()
 
@@ -288,6 +362,178 @@ def save_rgb_frames(
     return paths
 
 
+STATUS_GLYPHS = {
+    "S": ("11111", "10000", "10000", "11110", "00001", "00001", "11110"),
+    "F": ("11111", "10000", "10000", "11110", "10000", "10000", "10000"),
+}
+
+
+def draw_status_marker(frame: np.ndarray, success: bool) -> np.ndarray:
+    """Overlay a compact S/F status marker in the bottom-left corner."""
+    image = np.array(frame, copy=True)
+    if image.ndim != 3 or image.shape[-1] < 3:
+        return image
+
+    symbol = "S" if success else "F"
+    glyph = STATUS_GLYPHS[symbol]
+    height, width = image.shape[:2]
+    scale = max(2, min(height, width) // 64)
+    pad = scale * 2
+    margin = scale * 2
+    glyph_h = len(glyph) * scale
+    glyph_w = len(glyph[0]) * scale
+    panel_h = glyph_h + pad * 2
+    panel_w = glyph_w + pad * 2
+    x0 = margin
+    y0 = max(0, height - margin - panel_h)
+    x1 = min(width, x0 + panel_w)
+    y1 = min(height, y0 + panel_h)
+
+    image[y0:y1, x0:x1, :3] = (image[y0:y1, x0:x1, :3] * 0.25).astype(np.uint8)
+    color = np.array([40, 220, 90], dtype=np.uint8) if success else np.array([235, 60, 55], dtype=np.uint8)
+    gx0 = x0 + pad
+    gy0 = y0 + pad
+    for row, bits in enumerate(glyph):
+        for col, bit in enumerate(bits):
+            if bit == "1":
+                yy0 = gy0 + row * scale
+                yy1 = min(height, yy0 + scale)
+                xx0 = gx0 + col * scale
+                xx1 = min(width, xx0 + scale)
+                image[yy0:yy1, xx0:xx1, :3] = color
+    return image
+
+
+def overlay_status_marker(
+    frames_by_camera: dict[str, list[np.ndarray]],
+    success: bool | None,
+) -> dict[str, list[np.ndarray]]:
+    if success is None:
+        return frames_by_camera
+    return {
+        camera_name: [draw_status_marker(frame, bool(success)) for frame in frames]
+        for camera_name, frames in frames_by_camera.items()
+    }
+
+
+def make_video_grid_frame(frames: list[np.ndarray], columns: int = 3) -> np.ndarray:
+    valid_frames = [normalize_rgb_frame(frame) for frame in frames]
+    valid_frames = [frame for frame in valid_frames if frame is not None]
+    if not valid_frames:
+        return np.zeros((256, 256, 3), dtype=np.uint8)
+    height = max(frame.shape[0] for frame in valid_frames)
+    width = max(frame.shape[1] for frame in valid_frames)
+    cells: list[np.ndarray] = []
+    for frame in valid_frames:
+        cell = np.zeros((height, width, 3), dtype=np.uint8)
+        cell[: frame.shape[0], : frame.shape[1], :3] = frame[:, :, :3]
+        cells.append(cell)
+    while len(cells) % columns != 0:
+        cells.append(np.zeros((height, width, 3), dtype=np.uint8))
+    rows = []
+    for start in range(0, len(cells), columns):
+        rows.append(np.concatenate(cells[start : start + columns], axis=1))
+    return np.concatenate(rows, axis=0)
+
+
+def camera_name_from_video_path(path: str | Path) -> str:
+    parts = Path(path).parts
+    if "videos" in parts:
+        index = parts.index("videos")
+        if index + 1 < len(parts):
+            return parts[index + 1]
+    return Path(path).parent.name
+
+
+def save_combined_video(
+    summaries: list[dict[str, Any]],
+    output_dir: str | Path,
+    camera_order: list[str],
+    fps: int = 20,
+) -> Path | None:
+    if not summaries:
+        return None
+    try:
+        import imageio.v2 as iio
+        import imageio.v3 as iio3
+    except ImportError:
+        print("imageio is not installed; skipping combined video save.")
+        return None
+
+    output_path = Path(output_dir) / "combined" / "combined_all_cameras.mp4"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    wrote_frame = False
+    with iio.get_writer(output_path, fps=fps) as writer:
+        for summary in summaries:
+            videos_by_camera = {
+                camera_name_from_video_path(path): Path(path)
+                for path in summary.get("video_paths", [])
+            }
+            selected_paths = [videos_by_camera[name] for name in camera_order if name in videos_by_camera]
+            if not selected_paths:
+                selected_paths = [Path(path) for path in summary.get("video_paths", [])]
+            if not selected_paths:
+                continue
+
+            iterators = [iter(iio3.imiter(path)) for path in selected_paths]
+            active = [True] * len(iterators)
+            last_frames: list[np.ndarray | None] = [None] * len(iterators)
+            while any(active):
+                frame_batch: list[np.ndarray] = []
+                advanced = False
+                for index, iterator in enumerate(iterators):
+                    if active[index]:
+                        try:
+                            frame = normalize_rgb_frame(next(iterator))
+                            last_frames[index] = frame
+                            advanced = True
+                        except StopIteration:
+                            active[index] = False
+                    frame = last_frames[index]
+                    if frame is None:
+                        frame = np.zeros((256, 256, 3), dtype=np.uint8)
+                    frame_batch.append(frame)
+                if not advanced:
+                    break
+                writer.append_data(make_video_grid_frame(frame_batch, columns=3))
+                wrote_frame = True
+    return output_path if wrote_frame else None
+
+
+def save_success_report(output_dir: str | Path, summaries: list[dict[str, Any]]) -> Path:
+    total = len(summaries)
+    successes = sum(1 for summary in summaries if bool(summary.get("env_success")))
+    report = {
+        "total": total,
+        "successes": successes,
+        "failures": total - successes,
+        "success_rate": float(successes / total) if total else 0.0,
+        "episodes": [
+            {
+                "episode_id": summary.get("episode_id"),
+                "env_success": bool(summary.get("env_success")),
+                "cube_x": (
+                    summary.get("initial_state_config", {}).get("cube_x")
+                    if summary.get("initial_state_config", {}).get("cube_x") is not None
+                    else (summary.get("initial_state_config", {}).get("cube_pose", [None, None])[0])
+                ),
+                "cube_y": (
+                    summary.get("initial_state_config", {}).get("cube_y")
+                    if summary.get("initial_state_config", {}).get("cube_y") is not None
+                    else (summary.get("initial_state_config", {}).get("cube_pose", [None, None])[1])
+                ),
+                "obj_to_goal_pos_final": summary.get("obj_to_goal_pos_final"),
+                "data_path": summary.get("data_path"),
+                "video_paths": summary.get("video_paths", []),
+            }
+            for summary in summaries
+        ],
+    }
+    path = Path(output_dir) / "success_report.json"
+    path.write_text(json.dumps(make_json_serializable(report), indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
 def json_safe(value: Any) -> Any:
     value = to_numpy_tree(value)
 
@@ -377,6 +623,38 @@ def first_scalar_bool_from_info(info: Any, keys: tuple[str, ...] = ("success", "
             return _as_bool(info[key])
 
     return None
+
+
+
+def parse_robot_uids(value: Any) -> str | tuple[str, ...] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    values = [str(item) for item in value if str(item)]
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+    return tuple(values)
+
+
+def env_task_state(env, obs: Any | None = None) -> dict[str, np.ndarray | bool]:
+    base_env = env.unwrapped
+    if hasattr(base_env, "cube") and hasattr(base_env, "goal_site"):
+        cube_pose = base_env.cube.pose.sp
+        goal_pose = base_env.goal_site.pose.sp
+        obj_pos = np.asarray(cube_pose.p, dtype=np.float32)
+        obj_quat = np.asarray(cube_pose.q, dtype=np.float32)
+        goal_pos = np.asarray(goal_pose.p, dtype=np.float32)
+        return {
+            "obj_pose": np.concatenate([obj_pos, obj_quat]).astype(np.float32),
+            "goal_pos": goal_pos.astype(np.float32),
+            "obj_to_goal_pos": (goal_pos - obj_pos).astype(np.float32),
+        }
+    if obs is None:
+        raise ValueError("No environment task actors found and no observation was provided.")
+    return parse_pickcube_state(obs)
 
 
 def parse_pickcube_state(obs: Any) -> dict[str, np.ndarray | bool]:
@@ -480,8 +758,9 @@ def build_env(args: argparse.Namespace):
         robot_init_qpos_noise=args.robot_init_qpos_noise,
     )
 
-    if args.robot_uids:
-        kwargs["robot_uids"] = args.robot_uids
+    robot_uids = parse_robot_uids(args.robot_uids)
+    if robot_uids:
+        kwargs["robot_uids"] = robot_uids
 
     if args.image_width and args.image_height:
         kwargs["sensor_configs"] = dict(
@@ -529,8 +808,12 @@ def run_episode(
     initial_state_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     recorder = RecorderEnv(env)
-    obs, info = recorder.reset(seed=args.seed + episode_id)
+    episode_seed = args.seed + episode_id
+    obs, info = recorder.reset(seed=episode_seed)
     applied_initial_state = apply_initial_state_config(recorder, initial_state_config)
+    applied_phone_options = apply_phone_planner_options(recorder, args)
+    if applied_phone_options:
+        applied_initial_state.update(applied_phone_options)
     if applied_initial_state:
         info = recorder.unwrapped.get_info()
         obs = recorder.unwrapped.get_obs(info)
@@ -540,12 +823,19 @@ def run_episode(
     if episode_id == 0:
         print_observation_debug(obs)
 
-    parsed = parse_pickcube_state(obs)
+    parsed = env_task_state(recorder, obs)
     obj_pos = np.asarray(parsed["obj_pose"][:3], dtype=np.float32)
     goal_pos = np.asarray(parsed["goal_pos"], dtype=np.float32)
 
     home_qpos = parse_optional_home_qpos(args.home_qpos)
-    planner = PandaPickPlacePlanner(
+    base_env = recorder.unwrapped
+    if hasattr(base_env, "left_agent") and hasattr(base_env, "right_agent"):
+        planner_cls = TwoPandaPhoneSlotPlanner
+    elif hasattr(base_env, "conveyor_top_z") and hasattr(base_env, "planner_insert_rotation_q"):
+        planner_cls = PhoneSlotPlanner
+    else:
+        planner_cls = PandaPickPlacePlanner
+    planner = planner_cls(
         recorder,
         debug=args.debug_planner,
         vis=args.vis_planner,
@@ -557,32 +847,38 @@ def run_episode(
         grasp_candidate_count=args.grasp_candidate_count,
         refine_scale=args.refine_scale,
         rotate_on_approach=args.enable_grasp_diversity and not args.disable_grasp_diversity,
-        rng_seed=args.seed + episode_id,
+        rng_seed=episode_seed,
         place_height=args.planner_place_height,
         return_home=args.return_home,
         home_qpos=home_qpos,
     )
 
-    planner_result = planner.pick_and_place(obj_pos=obj_pos, goal_pos=goal_pos)
+    planner_result = planner.pick_and_place(obj_pos=obj_pos, goal_pos=goal_pos, close_steps=args.planner_close_steps, open_steps=args.planner_open_steps)
     planner.close()
+
+    final_parsed = env_task_state(recorder, recorder.observations[-1]) if recorder.observations else {}
+    final_obj_pose = np.asarray(final_parsed.get("obj_pose", []), dtype=np.float32)
+    final_goal_pos = np.asarray(final_parsed.get("goal_pos", []), dtype=np.float32)
+    final_obj_to_goal_pos = np.asarray(final_parsed.get("obj_to_goal_pos", []), dtype=np.float32)
 
     detected_cameras = sorted(recorder.frames_by_camera.keys())
     missing_cameras = [name for name in args.expected_cameras if name not in detected_cameras]
     planner_result_dict = planner_result_to_dict(planner_result)
     final_info = recorder.infos[-1] if recorder.infos else {}
+    env_success = first_scalar_bool_from_info(final_info)
 
     metadata = dict(
         env_id=args.env_id,
-        robot_uids=args.robot_uids,
+        robot_uids=parse_robot_uids(args.robot_uids),
         obs_mode=args.obs_mode,
         control_mode=args.control_mode,
         reward_mode=args.reward_mode,
         max_steps=args.max_steps,
-        seed=args.seed + episode_id,
+        seed=episode_seed,
         sweep_index=episode_id,
         initial_state_config=applied_initial_state,
         policy="motionplanning",
-        planner="PandaPickPlacePlanner",
+        planner=planner_cls.__name__,
         planner_joint_vel_limits=args.planner_joint_vel_limits,
         planner_joint_acc_limits=args.planner_joint_acc_limits,
         planner_prefer_screw=not args.prefer_rrt,
@@ -599,37 +895,55 @@ def run_episode(
         goal_grid_z=args.goal_grid_z,
         obj_pos_initial=obj_pos,
         goal_pos_initial=goal_pos,
+        obj_pose_final=final_obj_pose,
+        goal_pos_final=final_goal_pos,
+        obj_to_goal_pos_final=final_obj_to_goal_pos,
         detected_cameras=detected_cameras,
         expected_cameras=args.expected_cameras,
         missing_cameras=missing_cameras,
         image_width=args.image_width,
         image_height=args.image_height,
-        env_success=first_scalar_bool_from_info(final_info),
+        env_success=env_success,
         planner_result=planner_result_dict,
     )
 
-    data_path = save_episode_data(
-        args.output_dir,
-        episode_id,
-        recorder.observations,
-        recorder.actions,
-        recorder.rewards,
-        recorder.dones,
-        recorder.infos,
-        metadata,
-    )
+    data_path = None
+    if not args.skip_episode_data:
+        data_path = save_episode_data(
+            args.output_dir,
+            episode_id,
+            recorder.observations,
+            recorder.actions,
+            recorder.rewards,
+            recorder.dones,
+            recorder.infos,
+            metadata,
+        )
+
+    display_success = metadata["env_success"]
+    if display_success is None:
+        display_success = bool(planner_result_dict.get("success", False))
+    display_frames_by_camera = overlay_status_marker(recorder.frames_by_camera, display_success)
 
     frame_paths: list[Path] = []
     if args.save_rgb_frames:
-        frame_paths = save_rgb_frames(recorder.frames_by_camera, args.output_dir, episode_id)
+        frame_paths = save_rgb_frames(display_frames_by_camera, args.output_dir, episode_id)
 
     video_paths: list[str] = []
     if args.save_videos:
-        for camera_name, frames in recorder.frames_by_camera.items():
+        for camera_name, frames in display_frames_by_camera.items():
             video_path = Path(args.output_dir) / "videos" / camera_name / f"episode_{episode_id:06d}.mp4"
             saved = save_video(frames, video_path, fps=args.video_fps)
             if saved is not None:
                 video_paths.append(str(saved))
+
+    if args.print_planner_stages:
+        print(f"planner success: {planner_result.success}, failed_stage: {planner_result.failed_stage}")
+        print("completed stages:", " -> ".join(planner_result.completed_stages))
+        if final_goal_pos.size >= 3 and final_obj_pose.size >= 3:
+            print("final goal pos:", final_goal_pos[:3].astype(float).tolist())
+            print("final object pos:", final_obj_pose[:3].astype(float).tolist())
+            print("final object-to-goal:", final_obj_to_goal_pos[:3].astype(float).tolist())
 
     if missing_cameras:
         print(
@@ -641,12 +955,15 @@ def run_episode(
 
     return dict(
         episode_id=episode_id,
-        data_path=str(data_path),
+        data_path=str(data_path) if data_path is not None else None,
         initial_state_config=applied_initial_state,
         num_steps=len(recorder.actions),
         total_reward=float(np.sum(recorder.rewards)) if recorder.rewards else 0.0,
         env_success=metadata["env_success"],
         planner_result=planner_result_dict,
+        obj_pose_final=final_obj_pose,
+        goal_pos_final=final_goal_pos,
+        obj_to_goal_pos_final=final_obj_to_goal_pos,
         detected_cameras=detected_cameras,
         missing_cameras=missing_cameras,
         num_saved_frames=len(frame_paths),
@@ -667,7 +984,7 @@ def save_summary(output_dir: Path, summaries: list[dict[str, Any]]) -> Path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--env-id", default="PickCubeMultiCam-v1")
-    parser.add_argument("--robot-uids", default="panda")
+    parser.add_argument("--robot-uids", nargs="+", default=["panda"])
     parser.add_argument("--obs-mode", default="rgb+state")
     parser.add_argument("--control-mode", default="pd_joint_pos")
     parser.add_argument("--reward-mode", default="normalized_dense")
@@ -683,16 +1000,20 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--save-rgb-frames", action="store_true")
     parser.add_argument("--save-videos", action="store_true")
+    parser.add_argument("--skip-episode-data", action="store_true", help="Do not save large episode npz files; keep summary/report/videos only.")
     parser.add_argument("--video-fps", type=int, default=20)
     parser.add_argument("--image-width", type=int, default=256)
     parser.add_argument("--image-height", type=int, default=256)
     parser.add_argument("--debug-planner", action="store_true")
     parser.add_argument("--vis-planner", action="store_true")
     parser.add_argument("--print-env-info", action="store_true")
+    parser.add_argument("--print-planner-stages", action="store_true")
     parser.add_argument("--planner-joint-vel-limits", type=float, default=0.55)
     parser.add_argument("--planner-joint-acc-limits", type=float, default=0.45)
     parser.add_argument("--refine-scale", type=int, default=1)
     parser.add_argument("--planner-place-height", type=float)
+    parser.add_argument("--planner-close-steps", type=int, default=24)
+    parser.add_argument("--planner-open-steps", type=int, default=16)
     parser.add_argument("--return-home", dest="return_home", action="store_true", default=True)
     parser.add_argument("--no-return-home", dest="return_home", action="store_false")
     parser.add_argument(
@@ -703,12 +1024,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enable-grasp-diversity", action="store_true")
     parser.add_argument("--disable-grasp-diversity", action="store_true")
     parser.add_argument("--prefer-rrt", action="store_true")
+    parser.add_argument("--phone-insert-angle-deg", type=float)
+    parser.add_argument("--phone-rotation-alphas", nargs="*", type=float)
+    parser.add_argument("--two-panda-mode", choices=["support", "handoff"], default="support")
+    parser.add_argument("--handoff-angle-deg", type=float, default=45.0)
+    parser.add_argument("--handoff-receive-mode", choices=["topdown_center", "upper_side", "tilted_face"], default="topdown_center")
+    parser.add_argument("--upper-side-receive-fraction", type=float, default=None)
     parser.add_argument("--cube-x", type=float)
     parser.add_argument("--cube-y", type=float)
     parser.add_argument("--cube-yaw", type=float)
     parser.add_argument("--cube-x-values", nargs="*", type=float)
     parser.add_argument("--cube-y-values", nargs="*", type=float)
     parser.add_argument("--cube-yaw-values", nargs="*", type=float)
+    parser.add_argument("--cube-xy-values", action="append", help="Explicit cube positions as x,y pairs. Repeat this option for multiple positions, e.g. --cube-xy-values=-0.08,0.0")
     parser.add_argument("--goal-x", type=float)
     parser.add_argument("--goal-y", type=float)
     parser.add_argument("--goal-z", type=float)
@@ -759,6 +1087,18 @@ def main() -> None:
 
     summary_path = save_summary(args.output_dir, summaries)
     print(f"summary saved to {summary_path}")
+
+    report_path = save_success_report(args.output_dir, summaries)
+    successes = sum(1 for summary in summaries if bool(summary.get("env_success")))
+    total = len(summaries)
+    success_rate = successes / total if total else 0.0
+    print(f"success rate: {successes}/{total} = {success_rate:.2%}")
+    print(f"success report saved to {report_path}")
+
+    if args.save_videos:
+        combined_path = save_combined_video(summaries, args.output_dir, args.expected_cameras, fps=args.video_fps)
+        if combined_path is not None:
+            print(f"combined video saved to {combined_path}")
 
 
 if __name__ == "__main__":

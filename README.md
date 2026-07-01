@@ -70,6 +70,46 @@ python scripts/test_box_collision_drop.py \
   --save-videos
 ```
 
+
+
+## Stable Phone-Slot Handoff
+
+The current stable phone-slot collection path uses `TwoPandaPhoneSlotMultiCam-v1`. The right Panda grasps the phone, flips it to a 45 degree handoff pose, the left Panda receives it with the `upper_side` grasp, calibrates to upright, inserts it into the slot, releases, and both arms return home.
+
+当前稳定的手机插槽任务使用 `TwoPandaPhoneSlotMultiCam-v1`。不要大幅移动手机和槽位来制造图像多样性；这会改变机器人相对物体的几何关系，导致规则 planner 夹取/交接失败。稳定基准命令如下：
+
+```bash
+conda run -n maniskill_mp python scripts/collect_nominal_data.py \
+  --env-id TwoPandaPhoneSlotMultiCam-v1 \
+  --robot-uids panda panda \
+  --obs-mode rgb+state \
+  --control-mode pd_joint_pos \
+  --reward-mode normalized_dense \
+  --episodes 1 \
+  --max-steps 1800 \
+  --output-dir data/nominal/two_panda_phone_slot_handoff_stable \
+  --two-panda-mode handoff \
+  --handoff-angle-deg 45 \
+  --handoff-receive-mode upper_side \
+  --upper-side-receive-fraction 0.08 \
+  --cube-x -0.08 \
+  --cube-y 0.0 \
+  --goal-x 0.06 \
+  --goal-y 0.0 \
+  --print-planner-stages \
+  --save-videos \
+  --expected-cameras base_camera top_camera side_camera left_wrist_camera right_wrist_camera
+```
+
+Outputs include `summary.json`, `success_report.json`, per-camera videos, and `combined/combined_all_cameras.mp4`. The saved videos mark final status in the lower-left corner: green `S` for success and red `F` for failure.
+
+Recommended diversity sources for rule-based collection:
+
+- Keep the physical task near the stable pose and collect only successful rollouts.
+- Add small pose perturbations around the stable point, e.g. millimeter-level `cube-y` offsets.
+- Prefer camera/view, lighting, color, texture, crop, and image augmentation for visual diversity.
+- Avoid large phone/slot translations unless the robot base and planner targets are redesigned together.
+
 ## Repository Layout
 
 ```text

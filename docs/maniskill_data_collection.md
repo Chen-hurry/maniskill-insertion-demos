@@ -41,6 +41,46 @@ python -m mani_skill.examples.demo_random_action -e PickCube-v1
 
 A successful run prints the observation space, action space, reward, termination flags, and task info for each step. Random actions usually do not solve the task, so `success: False` is normal.
 
+
+
+## Current Stable Phone-Slot Workflow
+
+The active high-value collection task is the two-Panda phone-slot handoff in `TwoPandaPhoneSlotMultiCam-v1`. Use the `maniskill_mp` environment and run from the repository root:
+
+```bash
+conda run -n maniskill_mp python scripts/collect_nominal_data.py \
+  --env-id TwoPandaPhoneSlotMultiCam-v1 \
+  --robot-uids panda panda \
+  --obs-mode rgb+state \
+  --control-mode pd_joint_pos \
+  --reward-mode normalized_dense \
+  --episodes 1 \
+  --max-steps 1800 \
+  --output-dir data/nominal/two_panda_phone_slot_handoff_stable \
+  --two-panda-mode handoff \
+  --handoff-angle-deg 45 \
+  --handoff-receive-mode upper_side \
+  --upper-side-receive-fraction 0.08 \
+  --cube-x -0.08 \
+  --cube-y 0.0 \
+  --goal-x 0.06 \
+  --goal-y 0.0 \
+  --print-planner-stages \
+  --save-videos \
+  --expected-cameras base_camera top_camera side_camera left_wrist_camera right_wrist_camera
+```
+
+The stable baseline is deliberately narrow: phone at `(-0.08, 0.0)`, slot goal at `(0.06, 0.0)`, 45 degree handoff, and `upper_side` receiving grasp. This gives a reliable nominal trajectory for recovery/detection work.
+
+Data diversity should be added in low-risk ways first:
+
+1. Collect repeated successful baseline rollouts and keep only successful episodes.
+2. Add very small physical pose perturbations near the baseline.
+3. Vary camera viewpoints, lighting, colors, textures, and image crops.
+4. Use offline image augmentation to move the phone/slot in pixel space without changing the contact mechanics.
+
+Large physical translations of only the phone and slot are not recommended with this rule-based planner, because the Panda bases and handoff geometry do not move with the task.
+
 ## 3. Nominal Data Collection
 
 The first collection script is:
