@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from itertools import product
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from tqdm import trange
 from robust_recovery.planning.panda_motion_planner import (
     PandaPickPlacePlanner,
     PhoneSlotPlanner,
+    SingleAgentControlAdapter,
     TwoPandaPhoneSlotPlanner,
 )
 
@@ -43,6 +45,20 @@ def to_numpy_tree(value: Any) -> Any:
     return np.asarray(value)
 
 
+def copy_numpy_tree(value: Any) -> Any:
+    """Convert nested tensors to numpy and detach storage from env-owned buffers."""
+    value = to_numpy_tree(value)
+    if isinstance(value, np.ndarray):
+        return value.copy()
+    if isinstance(value, dict):
+        return {key: copy_numpy_tree(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [copy_numpy_tree(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(copy_numpy_tree(item) for item in value)
+    return value
+
+
 def _as_bool(value: Any) -> bool:
     value = to_numpy_tree(value)
     if isinstance(value, np.ndarray):
@@ -65,15 +81,53 @@ def parse_robot_qpos_offsets(values: list[str] | None) -> list[np.ndarray]:
     if not values:
         return [np.zeros(7, dtype=np.float32)]
 
-    offsets: list[np.ndarray] = []
+    flat_values: list[str] = []
     for value in values:
+        if isinstance(value, (list, tuple)):
+            flat_values.extend(str(item) for item in value)
+        else:
+            flat_values.append(str(value))
+
+    offsets: list[np.ndarray] = []
+    for value in flat_values:
         offset = np.asarray(parse_float_csv(value), dtype=np.float32)
-        if offset.size not in (7, 9):
+        if offset.size not in (7, 9, 14, 18):
             raise ValueError(
-                "Each --robot-qpos-offsets value must contain 7 arm offsets "
-                f"or 9 full qpos offsets, got {offset.size}: {value}"
+                "Each --robot-qpos-offsets value must contain 7 single-arm offsets, "
+                "9 single-agent full-qpos offsets, 14 two-arm offsets, or 18 two-agent "
+                f"full-qpos offsets, got {offset.size}: {value}"
             )
         offsets.append(offset)
+    return offsets
+
+
+def parse_robot_tcp_offsets(values: list[str] | None) -> list[dict[str, np.ndarray] | None]:
+    if not values:
+        return [None]
+
+    flat_values: list[str] = []
+    for value in values:
+        if isinstance(value, (list, tuple)):
+            flat_values.extend(str(item) for item in value)
+        else:
+            flat_values.append(str(value))
+
+    offsets: list[dict[str, np.ndarray]] = []
+    for value in flat_values:
+        parsed = np.asarray(parse_float_csv(value), dtype=np.float32)
+        if parsed.size == 4:
+            left = np.array([parsed[0], parsed[1], 0.0], dtype=np.float32)
+            right = np.array([parsed[2], parsed[3], 0.0], dtype=np.float32)
+        elif parsed.size == 6:
+            left = parsed[:3]
+            right = parsed[3:]
+        else:
+            raise ValueError(
+                "Each --robot-tcp-offsets value must contain 4 world XY values "
+                "(left_dx,left_dy,right_dx,right_dy) or 6 world XYZ values, "
+                f"got {parsed.size}: {value}"
+            )
+        offsets.append({"left": left, "right": right})
     return offsets
 
 
@@ -87,6 +141,22 @@ def parse_optional_home_qpos(value: str | None) -> np.ndarray | None:
 
 
 def single_or_sweep_values(single_value: float | None, sweep_values: list[float] | None) -> list[float | None]:
+    if sweep_values is not None:
+        return sweep_values
+    if single_value is not None:
+        return [single_value]
+    return [None]
+
+
+def int_single_or_sweep_values(single_value: int | None, sweep_values: list[int] | None) -> list[int | None]:
+    if sweep_values is not None:
+        return sweep_values
+    if single_value is not None:
+        return [single_value]
+    return [None]
+
+
+def optional_sweep_values(single_value: float | None, sweep_values: list[float] | None) -> list[float | None]:
     if sweep_values is not None:
         return sweep_values
     if single_value is not None:
@@ -126,6 +196,79 @@ def goal_position_values(args: argparse.Namespace) -> tuple[list[float | None], 
     return goal_x_values, goal_y_values, goal_z_values
 
 
+def planner_variation_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
+    fields = [
+        ("slot_id", int_single_or_sweep_values(args.slot_id, args.slot_ids)),
+        ("phone_insert_angle_deg", optional_sweep_values(args.phone_insert_angle_deg, args.phone_insert_angle_deg_values)),
+        ("handoff_angle_deg", optional_sweep_values(None, args.handoff_angle_deg_values)),
+        ("upper_side_receive_fraction", optional_sweep_values(args.upper_side_receive_fraction, args.upper_side_receive_fraction_values)),
+        ("planner_right_pre_grasp_height", optional_sweep_values(args.planner_right_pre_grasp_height, args.planner_right_pre_grasp_height_values)),
+        ("planner_right_lift_height", optional_sweep_values(args.planner_right_lift_height, args.planner_right_lift_height_values)),
+        ("planner_right_flip_z_offset", optional_sweep_values(args.planner_right_flip_z_offset, args.planner_right_flip_z_offset_values)),
+        ("planner_right_pre_insert_height", optional_sweep_values(args.planner_right_pre_insert_height, args.planner_right_pre_insert_height_values)),
+        ("planner_right_post_release_lift_height", optional_sweep_values(args.planner_right_post_release_lift_height, args.planner_right_post_release_lift_height_values)),
+        ("planner_left_pre_grasp_height", optional_sweep_values(args.planner_left_pre_grasp_height, args.planner_left_pre_grasp_height_values)),
+        ("planner_left_lift_height", optional_sweep_values(args.planner_left_lift_height, args.planner_left_lift_height_values)),
+        ("planner_left_flip_z_offset", optional_sweep_values(args.planner_left_flip_z_offset, args.planner_left_flip_z_offset_values)),
+        ("planner_left_receive_z_offset", optional_sweep_values(args.planner_left_receive_z_offset, args.planner_left_receive_z_offset_values)),
+        ("planner_left_receive_primary_fraction", optional_sweep_values(args.planner_left_receive_primary_fraction, args.planner_left_receive_primary_fraction_values)),
+        ("planner_left_receive_retry_count", int_single_or_sweep_values(args.planner_left_receive_retry_count, args.planner_left_receive_retry_count_values)),
+        ("planner_left_handoff_lift_height", optional_sweep_values(args.planner_left_handoff_lift_height, args.planner_left_handoff_lift_height_values)),
+        ("planner_left_pre_receive_distance", optional_sweep_values(args.planner_left_pre_receive_distance, args.planner_left_pre_receive_distance_values)),
+        ("planner_left_calibrate_z_offset", optional_sweep_values(args.planner_left_calibrate_z_offset, args.planner_left_calibrate_z_offset_values)),
+        ("planner_left_pre_insert_height", optional_sweep_values(args.planner_left_pre_insert_height, args.planner_left_pre_insert_height_values)),
+        ("planner_left_post_release_lift_height", optional_sweep_values(args.planner_left_post_release_lift_height, args.planner_left_post_release_lift_height_values)),
+        ("planner_right_upper_side_receive_fraction", optional_sweep_values(args.planner_right_upper_side_receive_fraction, args.planner_right_upper_side_receive_fraction_values)),
+        ("planner_right_receive_y_offset", optional_sweep_values(args.planner_right_receive_y_offset, args.planner_right_receive_y_offset_values)),
+        ("planner_right_receive_z_offset", optional_sweep_values(args.planner_right_receive_z_offset, args.planner_right_receive_z_offset_values)),
+        ("planner_right_receive_min_left_clearance", optional_sweep_values(args.planner_right_receive_min_left_clearance, args.planner_right_receive_min_left_clearance_values)),
+        ("planner_right_receive_settle_steps", optional_sweep_values(args.planner_right_receive_settle_steps, args.planner_right_receive_settle_steps_values)),
+        ("planner_left_retract_after_right_handoff_y", optional_sweep_values(args.planner_left_retract_after_right_handoff_y, args.planner_left_retract_after_right_handoff_y_values)),
+        ("planner_left_retract_after_right_handoff_z", optional_sweep_values(args.planner_left_retract_after_right_handoff_z, args.planner_left_retract_after_right_handoff_z_values)),
+        ("planner_left_retract_after_right_handoff_x", optional_sweep_values(args.planner_left_retract_after_right_handoff_x, args.planner_left_retract_after_right_handoff_x_values)),
+        ("planner_right_handoff_lift_height", optional_sweep_values(args.planner_right_handoff_lift_height, args.planner_right_handoff_lift_height_values)),
+        ("planner_right_retract_after_left_handoff_x", optional_sweep_values(args.planner_right_retract_after_left_handoff_x, args.planner_right_retract_after_left_handoff_x_values)),
+        ("planner_right_retract_after_left_handoff_y", optional_sweep_values(args.planner_right_retract_after_left_handoff_y, args.planner_right_retract_after_left_handoff_y_values)),
+        ("planner_right_retract_after_left_handoff_z", optional_sweep_values(args.planner_right_retract_after_left_handoff_z, args.planner_right_retract_after_left_handoff_z_values)),
+        ("planner_right_pre_receive_distance", optional_sweep_values(args.planner_right_pre_receive_distance, args.planner_right_pre_receive_distance_values)),
+        ("planner_right_calibrate_z_offset", optional_sweep_values(args.planner_right_calibrate_z_offset, args.planner_right_calibrate_z_offset_values)),
+        ("planner_right_object_align_z_offset", optional_sweep_values(args.planner_right_object_align_z_offset, args.planner_right_object_align_z_offset_values)),
+        ("planner_right_object_align_max_angle_deg", optional_sweep_values(args.planner_right_object_align_max_angle_deg, args.planner_right_object_align_max_angle_deg_values)),
+        ("planner_insert_orientation_tolerance_deg", optional_sweep_values(args.planner_insert_orientation_tolerance_deg, args.planner_insert_orientation_tolerance_deg_values)),
+        ("planner_insert_vertical_tolerance_deg", optional_sweep_values(args.planner_insert_vertical_tolerance_deg, args.planner_insert_vertical_tolerance_deg_values)),
+        ("planner_insert_slot_axis_tolerance_deg", optional_sweep_values(args.planner_insert_slot_axis_tolerance_deg, args.planner_insert_slot_axis_tolerance_deg_values)),
+        ("planner_insert_slot_lateral_tolerance", optional_sweep_values(args.planner_insert_slot_lateral_tolerance, args.planner_insert_slot_lateral_tolerance_values)),
+        ("planner_insert_readiness_correction_z_offset", optional_sweep_values(args.planner_insert_readiness_correction_z_offset, args.planner_insert_readiness_correction_z_offset_values)),
+        ("planner_insert_readiness_min_height", optional_sweep_values(args.planner_insert_readiness_min_height, args.planner_insert_readiness_min_height_values)),
+        ("planner_insert_readiness_correction_attempts", optional_sweep_values(args.planner_insert_readiness_correction_attempts, args.planner_insert_readiness_correction_attempts_values)),
+    ]
+    configs: list[dict[str, Any]] = []
+    for values in product(*(field_values for _, field_values in fields)):
+        config = {name: value for (name, _), value in zip(fields, values) if value is not None}
+        configs.append(config)
+    return configs or [{}]
+
+
+SLOT_PLANNER_PRESETS: dict[int, dict[str, float]] = {
+    # Slot 0 is closest to the receiving arm. Without a short post-release
+    # retreat, the return-home motion can drag the phone back out of the slot.
+    0: {
+        "planner_left_post_release_lift_height": 0.080,
+    },
+    1: {},
+    2: {
+        "planner_left_post_release_lift_height": 0.040,
+        "planner_right_post_release_lift_height": 0.120,
+    },
+}
+
+
+def slot_planner_preset(slot_id: int | None) -> dict[str, float]:
+    if slot_id is None:
+        return {}
+    return dict(SLOT_PLANNER_PRESETS.get(int(slot_id), {}))
+
+
 def make_initial_state_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
     cube_xy_values = parse_cube_xy_values(args.cube_xy_values)
     cube_x_values = single_or_sweep_values(args.cube_x, args.cube_x_values)
@@ -133,26 +276,34 @@ def make_initial_state_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
     cube_yaw_values = single_or_sweep_values(args.cube_yaw, args.cube_yaw_values)
     goal_x_values, goal_y_values, goal_z_values = goal_position_values(args)
     robot_offsets = parse_robot_qpos_offsets(args.robot_qpos_offsets)
+    robot_tcp_offsets = parse_robot_tcp_offsets(args.robot_tcp_offsets)
+    planner_configs = planner_variation_grid(args)
 
     configs: list[dict[str, Any]] = []
     for robot_offset in robot_offsets:
-        cube_positions = cube_xy_values if cube_xy_values is not None else [(cube_x, cube_y) for cube_x in cube_x_values for cube_y in cube_y_values]
-        for cube_x, cube_y in cube_positions:
-            for cube_yaw in cube_yaw_values:
-                for goal_x in goal_x_values:
-                    for goal_y in goal_y_values:
-                        for goal_z in goal_z_values:
-                            configs.append(
-                                dict(
+        for robot_tcp_offset in robot_tcp_offsets:
+            cube_positions = cube_xy_values if cube_xy_values is not None else [(cube_x, cube_y) for cube_x in cube_x_values for cube_y in cube_y_values]
+            for cube_x, cube_y in cube_positions:
+                for cube_yaw in cube_yaw_values:
+                    for goal_x in goal_x_values:
+                        for goal_y in goal_y_values:
+                            for goal_z in goal_z_values:
+                                base_config = dict(
                                     robot_qpos_offset=robot_offset,
+                                    robot_tcp_offset=robot_tcp_offset,
                                     cube_x=cube_x,
                                     cube_y=cube_y,
                                     cube_yaw=cube_yaw,
+                                    move_conveyor_with_cube=args.move_conveyor_with_cube,
                                     goal_x=goal_x,
                                     goal_y=goal_y,
                                     goal_z=goal_z,
                                 )
-                            )
+                                for planner_config in planner_configs:
+                                    config = dict(base_config)
+                                    config.update(slot_planner_preset(planner_config.get("slot_id")))
+                                    config.update(planner_config)
+                                    configs.append(config)
     return configs
 
 
@@ -161,14 +312,16 @@ def phone_insert_rotation_quat(angle_deg: float) -> np.ndarray:
     return np.array([np.cos(half), 0.0, np.sin(half), 0.0], dtype=np.float32)
 
 
-def apply_phone_planner_options(env, args: argparse.Namespace) -> dict[str, Any]:
+def apply_phone_planner_options(env, args: argparse.Namespace, config: dict[str, Any] | None = None) -> dict[str, Any]:
     base_env = env.unwrapped
     applied: dict[str, Any] = {}
+    config = config or {}
     if not hasattr(base_env, "planner_insert_rotation_q"):
         return applied
 
-    if args.phone_insert_angle_deg is not None:
-        angle = float(args.phone_insert_angle_deg)
+    phone_insert_angle_deg = config.get("phone_insert_angle_deg", args.phone_insert_angle_deg)
+    if phone_insert_angle_deg is not None:
+        angle = float(phone_insert_angle_deg)
         base_env.planner_insert_angle_deg = angle
         base_env.planner_insert_rotation_q = tuple(phone_insert_rotation_quat(angle).astype(float).tolist())
         applied["phone_insert_angle_deg"] = angle
@@ -195,19 +348,186 @@ def apply_phone_planner_options(env, args: argparse.Namespace) -> dict[str, Any]
         applied["phone_rotation_alphas"] = list(alphas)
 
     if hasattr(base_env, "planner_two_panda_mode"):
+        handoff_angle_deg = config.get("handoff_angle_deg", args.handoff_angle_deg)
+        upper_side_receive_fraction = config.get("upper_side_receive_fraction", args.upper_side_receive_fraction)
         base_env.planner_two_panda_mode = args.two_panda_mode
-        base_env.planner_handoff_angle_deg = float(args.handoff_angle_deg)
+        base_env.planner_handoff_angle_deg = float(handoff_angle_deg)
         base_env.planner_handoff_receive_mode = args.handoff_receive_mode
-        if args.upper_side_receive_fraction is not None:
-            base_env.planner_upper_side_receive_fraction = float(args.upper_side_receive_fraction)
+        if hasattr(base_env, "planner_insert_arm_mode"):
+            base_env.planner_insert_arm_mode = str(args.planner_insert_arm_mode)
+            applied["planner_insert_arm_mode"] = str(base_env.planner_insert_arm_mode)
+        if hasattr(base_env, "planner_center_slot_insert_arm"):
+            base_env.planner_center_slot_insert_arm = str(args.planner_center_slot_insert_arm)
+            applied["planner_center_slot_insert_arm"] = str(base_env.planner_center_slot_insert_arm)
+        if upper_side_receive_fraction is not None:
+            base_env.planner_upper_side_receive_fraction = float(upper_side_receive_fraction)
         applied["two_panda_mode"] = args.two_panda_mode
-        applied["handoff_angle_deg"] = float(args.handoff_angle_deg)
+        applied["handoff_angle_deg"] = float(handoff_angle_deg)
         applied["handoff_receive_mode"] = args.handoff_receive_mode
         applied["upper_side_receive_fraction"] = float(getattr(base_env, "planner_upper_side_receive_fraction", 0.08))
+
+    planner_attr_names = (
+        "planner_right_pre_grasp_height",
+        "planner_right_lift_height",
+        "planner_right_flip_z_offset",
+        "planner_right_pre_insert_height",
+        "planner_right_post_release_lift_height",
+        "planner_left_pre_grasp_height",
+        "planner_left_lift_height",
+        "planner_left_flip_z_offset",
+        "planner_left_receive_z_offset",
+        "planner_left_receive_primary_fraction",
+        "planner_left_receive_min_right_clearance",
+        "planner_left_handoff_lift_height",
+        "planner_left_pre_receive_distance",
+        "planner_left_calibrate_z_offset",
+        "planner_left_pre_insert_height",
+        "planner_left_post_release_lift_height",
+        "planner_right_upper_side_receive_fraction",
+        "planner_right_receive_y_offset",
+        "planner_right_receive_z_offset",
+        "planner_right_receive_min_left_clearance",
+        "planner_left_retract_after_right_handoff_y",
+        "planner_left_retract_after_right_handoff_z",
+        "planner_left_retract_after_right_handoff_x",
+        "planner_right_handoff_lift_height",
+        "planner_right_retract_after_left_handoff_x",
+        "planner_right_retract_after_left_handoff_y",
+        "planner_right_retract_after_left_handoff_z",
+        "planner_right_pre_receive_distance",
+        "planner_right_calibrate_z_offset",
+        "planner_right_object_align_z_offset",
+        "planner_right_object_align_max_angle_deg",
+        "planner_insert_orientation_tolerance_deg",
+        "planner_insert_vertical_tolerance_deg",
+        "planner_insert_slot_axis_tolerance_deg",
+        "planner_insert_slot_lateral_tolerance",
+        "planner_insert_readiness_correction_z_offset",
+        "planner_insert_readiness_min_height",
+        "planner_right_receive_closed_loop_tolerance",
+        "planner_right_receive_closed_loop_orientation_tolerance_deg",
+        "planner_other_arm_obstacle_radius",
+        "planner_other_arm_obstacle_resolution",
+        "planner_local_cartesian_step_size",
+        "planner_local_cartesian_ik_threshold",
+        "planner_local_cartesian_max_joint_delta",
+        "planner_local_cartesian_max_obj_motion",
+        "planner_local_cartesian_min_other_tcp_distance",
+        "planner_side_pre_grasp_distance",
+        "planner_side_pre_grasp_z_offset",
+        "planner_release_retract_away_from_slot_distance",
+        "planner_release_retract_away_from_slot_z",
+    )
+    for name in planner_attr_names:
+        value = config.get(name, getattr(args, name, None))
+        if value is not None and hasattr(base_env, name):
+            setattr(base_env, name, float(value))
+            applied[name] = float(value)
+
+    if args.planner_grasp_pre_approach_mode is not None and hasattr(base_env, "planner_grasp_pre_approach_mode"):
+        base_env.planner_grasp_pre_approach_mode = str(args.planner_grasp_pre_approach_mode)
+        applied["planner_grasp_pre_approach_mode"] = str(base_env.planner_grasp_pre_approach_mode)
+    if args.planner_release_retract_mode is not None and hasattr(base_env, "planner_release_retract_mode"):
+        base_env.planner_release_retract_mode = str(args.planner_release_retract_mode)
+        applied["planner_release_retract_mode"] = str(base_env.planner_release_retract_mode)
+
+    int_planner_attr_names = (
+        "planner_left_receive_retry_count",
+        "planner_right_receive_settle_steps",
+        "planner_right_receive_closed_loop_attempts",
+        "planner_right_receive_closed_loop_refine_steps",
+        "planner_other_arm_obstacle_link_stride",
+        "planner_insert_readiness_correction_attempts",
+        "planner_pre_grasp_refine_steps",
+        "planner_grasp_refine_steps",
+        "planner_state_close_min_steps",
+        "planner_pre_receive_refine_steps",
+        "planner_receive_refine_steps",
+        "planner_handoff_center_refine_steps",
+        "planner_post_handoff_retract_refine_steps",
+        "planner_insert_intermediate_refine_steps",
+        "planner_insert_final_refine_steps",
+    )
+    for name in int_planner_attr_names:
+        value = config.get(name, getattr(args, name, None))
+        if value is not None and hasattr(base_env, name):
+            setattr(base_env, name, int(value))
+            applied[name] = int(value)
+
+    tuple_planner_attr_names = (
+        "planner_left_receive_candidate_fractions",
+        "planner_left_receive_candidate_y_offsets",
+        "planner_right_receive_candidate_fractions",
+        "planner_right_receive_candidate_y_offsets",
+        "planner_right_pose_guided_insert_heights",
+        "planner_left_pose_guided_insert_heights",
+    )
+    for name in tuple_planner_attr_names:
+        value = config.get(name, getattr(args, name, None))
+        if value is not None and hasattr(base_env, name):
+            values = tuple(float(v) for v in value)
+            if not values:
+                raise ValueError(f"--{name.replace('_', '-')} must contain at least one value.")
+            setattr(base_env, name, values)
+            applied[name] = list(values)
+
+    if args.smooth_data_collection:
+        smooth_defaults = {
+            "planner_pre_grasp_refine_steps": 1,
+            "planner_grasp_refine_steps": 4,
+            "planner_pre_receive_refine_steps": 2,
+            "planner_receive_refine_steps": 6,
+            "planner_handoff_center_refine_steps": 2,
+            "planner_post_handoff_retract_refine_steps": 3,
+            "planner_insert_intermediate_refine_steps": 4,
+            "planner_insert_final_refine_steps": 18,
+        }
+        for name, value in smooth_defaults.items():
+            if getattr(args, name, None) is None and hasattr(base_env, name):
+                setattr(base_env, name, value)
+                applied[name] = value
+        for name in ("planner_right_pose_guided_insert_heights", "planner_left_pose_guided_insert_heights"):
+            if getattr(args, name, None) is None and hasattr(base_env, name):
+                setattr(base_env, name, (0.0,))
+                applied[name] = [0.0]
+
+    if args.planner_single_step_insert:
+        for name in ("planner_right_pose_guided_insert_heights", "planner_left_pose_guided_insert_heights"):
+            if hasattr(base_env, name):
+                setattr(base_env, name, (0.0,))
+                applied[name] = [0.0]
+
+    if args.planner_right_receive_use_phone_frame_orientation is not None and hasattr(base_env, "planner_right_receive_use_phone_frame_orientation"):
+        base_env.planner_right_receive_use_phone_frame_orientation = bool(args.planner_right_receive_use_phone_frame_orientation)
+        applied["planner_right_receive_use_phone_frame_orientation"] = bool(base_env.planner_right_receive_use_phone_frame_orientation)
+    if args.planner_right_receive_closed_loop_enabled is not None and hasattr(base_env, "planner_right_receive_closed_loop_enabled"):
+        base_env.planner_right_receive_closed_loop_enabled = bool(args.planner_right_receive_closed_loop_enabled)
+        applied["planner_right_receive_closed_loop_enabled"] = bool(base_env.planner_right_receive_closed_loop_enabled)
+    if args.planner_right_align_object_pose_before_insert is not None and hasattr(base_env, "planner_right_align_object_pose_before_insert"):
+        base_env.planner_right_align_object_pose_before_insert = bool(args.planner_right_align_object_pose_before_insert)
+        applied["planner_right_align_object_pose_before_insert"] = bool(base_env.planner_right_align_object_pose_before_insert)
+    if args.planner_check_insert_readiness is not None and hasattr(base_env, "planner_check_insert_readiness"):
+        base_env.planner_check_insert_readiness = bool(args.planner_check_insert_readiness)
+        applied["planner_check_insert_readiness"] = bool(base_env.planner_check_insert_readiness)
+    if args.planner_state_triggered_close_enabled is not None and hasattr(base_env, "planner_state_triggered_close_enabled"):
+        base_env.planner_state_triggered_close_enabled = bool(args.planner_state_triggered_close_enabled)
+        applied["planner_state_triggered_close_enabled"] = bool(base_env.planner_state_triggered_close_enabled)
+    if args.planner_insert_calibrate_single_step is not None and hasattr(base_env, "planner_insert_calibrate_single_step"):
+        base_env.planner_insert_calibrate_single_step = bool(args.planner_insert_calibrate_single_step)
+        applied["planner_insert_calibrate_single_step"] = bool(base_env.planner_insert_calibrate_single_step)
+    if args.planner_idle_return_home_during_insert is not None and hasattr(base_env, "planner_idle_return_home_during_insert"):
+        base_env.planner_idle_return_home_during_insert = bool(args.planner_idle_return_home_during_insert)
+        applied["planner_idle_return_home_during_insert"] = bool(base_env.planner_idle_return_home_during_insert)
+    if args.planner_local_cartesian_grasp_enabled is not None and hasattr(base_env, "planner_local_cartesian_grasp_enabled"):
+        base_env.planner_local_cartesian_grasp_enabled = bool(args.planner_local_cartesian_grasp_enabled)
+        applied["planner_local_cartesian_grasp_enabled"] = bool(base_env.planner_local_cartesian_grasp_enabled)
+    if args.planner_other_arm_obstacle_enabled is not None and hasattr(base_env, "planner_other_arm_obstacle_enabled"):
+        base_env.planner_other_arm_obstacle_enabled = bool(args.planner_other_arm_obstacle_enabled)
+        applied["planner_other_arm_obstacle_enabled"] = bool(base_env.planner_other_arm_obstacle_enabled)
     return applied
 
 
-def apply_initial_state_config(env, config: dict[str, Any] | None) -> dict[str, Any]:
+def apply_initial_state_config(env, config: dict[str, Any] | None, args: argparse.Namespace | None = None) -> dict[str, Any]:
     if not config:
         return {}
 
@@ -216,22 +536,42 @@ def apply_initial_state_config(env, config: dict[str, Any] | None) -> dict[str, 
 
     robot_offset = np.asarray(config.get("robot_qpos_offset", []), dtype=np.float32)
     if robot_offset.size and not np.allclose(robot_offset, 0.0):
-        target_agent = base_env.agent
-        if not hasattr(target_agent, "robot") and hasattr(base_env, "right_agent"):
-            target_agent = base_env.right_agent
-        qpos = target_agent.robot.get_qpos()[0].cpu().numpy().astype(np.float32)
-        if robot_offset.size == 7:
-            qpos[:7] += robot_offset
-        elif robot_offset.size == qpos.size:
-            qpos += robot_offset
+        if robot_offset.size in (14, 18) and hasattr(base_env, "left_agent") and hasattr(base_env, "right_agent"):
+            single_size = robot_offset.size // 2
+            for side, agent, offset in (
+                ("left", base_env.left_agent, robot_offset[:single_size]),
+                ("right", base_env.right_agent, robot_offset[single_size:]),
+            ):
+                qpos = agent.robot.get_qpos()[0].cpu().numpy().astype(np.float32)
+                if offset.size == 7:
+                    qpos[:7] += offset
+                elif offset.size == qpos.size:
+                    qpos += offset
+                else:
+                    raise ValueError(
+                        f"{side} robot qpos offset has size {offset.size}, expected 7 or {qpos.size}."
+                    )
+                agent.robot.set_qpos(qpos)
+                agent.robot.set_qvel(np.zeros_like(qpos))
+                applied[f"robot_qpos_offset_{side}"] = offset.tolist()
+                applied[f"robot_qpos_{side}"] = qpos.tolist()
         else:
-            raise ValueError(
-                f"Robot qpos offset has size {robot_offset.size}, expected 7 or {qpos.size}."
-            )
-        target_agent.robot.set_qpos(qpos)
-        target_agent.robot.set_qvel(np.zeros_like(qpos))
-        applied["robot_qpos_offset"] = robot_offset.tolist()
-        applied["robot_qpos"] = qpos.tolist()
+            target_agent = base_env.agent
+            if not hasattr(target_agent, "robot") and hasattr(base_env, "right_agent"):
+                target_agent = base_env.right_agent
+            qpos = target_agent.robot.get_qpos()[0].cpu().numpy().astype(np.float32)
+            if robot_offset.size == 7:
+                qpos[:7] += robot_offset
+            elif robot_offset.size == qpos.size:
+                qpos += robot_offset
+            else:
+                raise ValueError(
+                    f"Robot qpos offset has size {robot_offset.size}, expected 7 or {qpos.size}."
+                )
+            target_agent.robot.set_qpos(qpos)
+            target_agent.robot.set_qvel(np.zeros_like(qpos))
+            applied["robot_qpos_offset"] = robot_offset.tolist()
+            applied["robot_qpos"] = qpos.tolist()
 
     cube_x = config.get("cube_x")
     cube_y = config.get("cube_y")
@@ -249,10 +589,38 @@ def apply_initial_state_config(env, config: dict[str, Any] | None) -> dict[str, 
             cube_q = np.array([np.cos(half), 0.0, 0.0, np.sin(half)], dtype=np.float32)
         base_env.cube.set_pose(sapien.Pose(cube_p, cube_q))
         applied["cube_pose"] = np.concatenate([cube_p, cube_q]).tolist()
+        if config.get("move_conveyor_with_cube") and hasattr(base_env, "conveyor"):
+            conveyor_pose = base_env.conveyor.pose.sp
+            conveyor_p = np.asarray(conveyor_pose.p, dtype=np.float32).copy()
+            conveyor_q = np.asarray(conveyor_pose.q, dtype=np.float32).copy()
+            conveyor_p[0] = cube_p[0]
+            conveyor_p[1] = cube_p[1]
+            base_env.conveyor.set_pose(sapien.Pose(conveyor_p, conveyor_q))
+            if hasattr(base_env, "phone_spawn_center"):
+                base_env.phone_spawn_center = (float(conveyor_p[0]), float(conveyor_p[1]))
+            applied["conveyor_pose"] = np.concatenate([conveyor_p, conveyor_q]).tolist()
 
     goal_x = config.get("goal_x")
     goal_y = config.get("goal_y")
     goal_z = config.get("goal_z")
+    slot_id = config.get("slot_id")
+    if slot_id is not None:
+        slot_count = int(getattr(base_env, "slot_count", 1))
+        slot_id = int(slot_id)
+        if slot_id < 0 or slot_id >= slot_count:
+            raise ValueError(f"slot_id must be in [0, {slot_count - 1}], got {slot_id}")
+        slot_pitch = float(getattr(base_env, "slot_pitch", 0.0))
+        slot_center = getattr(base_env, "slot_center", (0.0, 0.0))
+        slot_offset = (slot_id - (slot_count - 1) / 2.0) * slot_pitch
+        if goal_x is None:
+            goal_x = float(slot_center[0])
+        goal_y = float(slot_center[1]) + slot_offset
+        if goal_z is None and hasattr(base_env, "phone_goal_z"):
+            goal_z = float(base_env.phone_goal_z)
+        if hasattr(base_env, "planner_slot_id"):
+            base_env.planner_slot_id = slot_id
+        applied["slot_id"] = slot_id
+        applied["slot_offset_y"] = float(slot_offset)
     if goal_x is not None or goal_y is not None or goal_z is not None:
         goal_pose = base_env.goal_site.pose.sp
         goal_p = np.asarray(goal_pose.p, dtype=np.float32).copy()
@@ -274,7 +642,62 @@ def apply_initial_state_config(env, config: dict[str, Any] | None) -> dict[str, 
                 box_pose = base_env.goal_box.pose.sp
                 applied["goal_box_pose"] = np.asarray(box_pose.p, dtype=np.float32).tolist()
 
+    tcp_offset_config = config.get("robot_tcp_offset")
+    if tcp_offset_config and hasattr(base_env, "left_agent") and hasattr(base_env, "right_agent"):
+        gripper_commands: dict[str, float] = {}
+        agent_items = list(base_env.agent.agents_dict.items())
+        uid_by_agent = {agent: uid for uid, agent in agent_items}
+        for side, agent in (("left", base_env.left_agent), ("right", base_env.right_agent)):
+            offset = np.asarray(tcp_offset_config.get(side, np.zeros(3)), dtype=np.float32)
+            if offset.size == 2:
+                offset = np.asarray([offset[0], offset[1], 0.0], dtype=np.float32)
+            if offset.size != 3:
+                raise ValueError(f"{side} TCP offset must have 2 or 3 values, got {offset.size}.")
+            if np.linalg.norm(offset) <= 1e-8:
+                continue
+
+            uid = uid_by_agent.get(agent)
+            if uid is None:
+                raise ValueError(f"Could not find uid for {side} agent.")
+            pose = agent.tcp.pose.sp
+            start_p = np.asarray(pose.p, dtype=np.float32)
+            target_pose = sapien.Pose(start_p + offset, np.asarray(pose.q, dtype=np.float32))
+            planner = PhoneSlotPlanner(
+                SingleAgentControlAdapter(env, uid, agent, gripper_commands),
+                joint_vel_limits=float(getattr(args, "planner_joint_vel_limits", 0.35)) if args is not None else 0.35,
+                joint_acc_limits=float(getattr(args, "planner_joint_acc_limits", 0.25)) if args is not None else 0.25,
+                prefer_screw=not bool(getattr(args, "prefer_rrt", False)) if args is not None else True,
+                refine_scale=int(getattr(args, "refine_scale", 1)) if args is not None else 1,
+            )
+            ok = planner.move(target_pose, refine_steps=planner._refine(4))
+            planner.close()
+            applied[f"robot_tcp_offset_{side}"] = offset.tolist()
+            applied[f"robot_tcp_target_{side}"] = np.concatenate([np.asarray(target_pose.p), np.asarray(target_pose.q)]).tolist()
+            applied[f"robot_tcp_offset_success_{side}"] = bool(ok)
+
+    if hasattr(base_env, "left_agent") and hasattr(base_env, "right_agent"):
+        applied["left_tcp_pose_initial"] = np.concatenate(
+            [
+                np.asarray(base_env.left_agent.tcp.pose.sp.p, dtype=np.float32),
+                np.asarray(base_env.left_agent.tcp.pose.sp.q, dtype=np.float32),
+            ]
+        ).tolist()
+        applied["right_tcp_pose_initial"] = np.concatenate(
+            [
+                np.asarray(base_env.right_agent.tcp.pose.sp.p, dtype=np.float32),
+                np.asarray(base_env.right_agent.tcp.pose.sp.q, dtype=np.float32),
+            ]
+        ).tolist()
+
     return applied
+
+
+def language_instruction_for_episode(args: argparse.Namespace, initial_state_config: dict[str, Any]) -> str:
+    slot_id = initial_state_config.get("slot_id")
+    slot_number = int(slot_id) + 1 if slot_id is not None else 1
+    if args.language_instruction:
+        return args.language_instruction.format(slot_id=slot_id, slot_number=slot_number)
+    return args.language_instruction_template.format(slot_id=slot_id, slot_number=slot_number)
 
 
 def is_done(terminated: Any, truncated: Any) -> bool:
@@ -713,24 +1136,29 @@ class RecorderEnv:
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         done = is_done(terminated, truncated)
+        obs_record = copy_numpy_tree(obs)
+        action_record = copy_numpy_tree(action)
+        info_record = copy_numpy_tree(info)
 
-        self.observations.append(obs)
-        self.actions.append(action)
+        self.observations.append(obs_record)
+        self.actions.append(action_record)
         self.rewards.append(scalar_float(reward))
         self.dones.append(done)
-        self.infos.append(info)
+        self.infos.append(info_record)
 
-        for camera_name, frame in rgb_frames_by_camera(obs).items():
-            self.frames_by_camera.setdefault(camera_name, []).append(frame)
+        for camera_name, frame in rgb_frames_by_camera(obs_record).items():
+            self.frames_by_camera.setdefault(camera_name, []).append(frame.copy())
 
         return obs, reward, terminated, truncated, info
 
     def record_observation(self, obs: Any, info: Any) -> None:
-        self.observations.append(obs)
-        self.infos.append(info)
+        obs_record = copy_numpy_tree(obs)
+        info_record = copy_numpy_tree(info)
+        self.observations.append(obs_record)
+        self.infos.append(info_record)
 
-        for camera_name, frame in rgb_frames_by_camera(obs).items():
-            self.frames_by_camera.setdefault(camera_name, []).append(frame)
+        for camera_name, frame in rgb_frames_by_camera(obs_record).items():
+            self.frames_by_camera.setdefault(camera_name, []).append(frame.copy())
 
     def clear(self) -> None:
         self.observations.clear()
@@ -806,14 +1234,18 @@ def run_episode(
     args: argparse.Namespace,
     episode_id: int,
     initial_state_config: dict[str, Any] | None = None,
+    attempt_id: int | None = None,
 ) -> dict[str, Any]:
     recorder = RecorderEnv(env)
-    episode_seed = args.seed + episode_id
+    if attempt_id is None:
+        attempt_id = episode_id
+    episode_seed = args.seed + attempt_id
     obs, info = recorder.reset(seed=episode_seed)
-    applied_initial_state = apply_initial_state_config(recorder, initial_state_config)
-    applied_phone_options = apply_phone_planner_options(recorder, args)
+    applied_initial_state = apply_initial_state_config(recorder, initial_state_config, args)
+    applied_phone_options = apply_phone_planner_options(recorder, args, initial_state_config)
     if applied_phone_options:
         applied_initial_state.update(applied_phone_options)
+    language_instruction = language_instruction_for_episode(args, applied_initial_state)
     if applied_initial_state:
         info = recorder.unwrapped.get_info()
         obs = recorder.unwrapped.get_obs(info)
@@ -853,7 +1285,13 @@ def run_episode(
         home_qpos=home_qpos,
     )
 
-    planner_result = planner.pick_and_place(obj_pos=obj_pos, goal_pos=goal_pos, close_steps=args.planner_close_steps, open_steps=args.planner_open_steps)
+    close_steps = args.planner_close_steps
+    if close_steps is None:
+        close_steps = 18 if args.smooth_data_collection else 24
+    open_steps = args.planner_open_steps
+    if open_steps is None:
+        open_steps = 12 if args.smooth_data_collection else 16
+    planner_result = planner.pick_and_place(obj_pos=obj_pos, goal_pos=goal_pos, close_steps=close_steps, open_steps=open_steps)
     planner.close()
 
     final_parsed = env_task_state(recorder, recorder.observations[-1]) if recorder.observations else {}
@@ -875,12 +1313,15 @@ def run_episode(
         reward_mode=args.reward_mode,
         max_steps=args.max_steps,
         seed=episode_seed,
+        attempt_id=attempt_id,
         sweep_index=episode_id,
         initial_state_config=applied_initial_state,
         policy="motionplanning",
         planner=planner_cls.__name__,
         planner_joint_vel_limits=args.planner_joint_vel_limits,
         planner_joint_acc_limits=args.planner_joint_acc_limits,
+        planner_close_steps=close_steps,
+        planner_open_steps=open_steps,
         planner_prefer_screw=not args.prefer_rrt,
         planner_grasp_diversity=args.enable_grasp_diversity and not args.disable_grasp_diversity,
         planner_grasp_candidate_count=args.grasp_candidate_count,
@@ -889,6 +1330,7 @@ def run_episode(
         planner_place_height=args.planner_place_height,
         planner_return_home=args.return_home,
         planner_home_qpos=home_qpos,
+        language_instruction=language_instruction,
         goal_grid_3x3=args.goal_grid_3x3,
         goal_grid_center=[args.goal_grid_center_x, args.goal_grid_center_y],
         goal_grid_spacing=args.goal_grid_spacing,
@@ -908,7 +1350,8 @@ def run_episode(
     )
 
     data_path = None
-    if not args.skip_episode_data:
+    should_save_artifacts = not args.save_only_successful or bool(env_success)
+    if not args.skip_episode_data and should_save_artifacts:
         data_path = save_episode_data(
             args.output_dir,
             episode_id,
@@ -926,11 +1369,11 @@ def run_episode(
     display_frames_by_camera = overlay_status_marker(recorder.frames_by_camera, display_success)
 
     frame_paths: list[Path] = []
-    if args.save_rgb_frames:
+    if args.save_rgb_frames and should_save_artifacts:
         frame_paths = save_rgb_frames(display_frames_by_camera, args.output_dir, episode_id)
 
     video_paths: list[str] = []
-    if args.save_videos:
+    if args.save_videos and should_save_artifacts:
         for camera_name, frames in display_frames_by_camera.items():
             video_path = Path(args.output_dir) / "videos" / camera_name / f"episode_{episode_id:06d}.mp4"
             saved = save_video(frames, video_path, fps=args.video_fps)
@@ -957,6 +1400,7 @@ def run_episode(
         episode_id=episode_id,
         data_path=str(data_path) if data_path is not None else None,
         initial_state_config=applied_initial_state,
+        language_instruction=language_instruction,
         num_steps=len(recorder.actions),
         total_reward=float(np.sum(recorder.rewards)) if recorder.rewards else 0.0,
         env_success=metadata["env_success"],
@@ -990,6 +1434,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reward-mode", default="normalized_dense")
     parser.add_argument("--render-mode", default=None)
     parser.add_argument("--episodes", type=int, default=1)
+    parser.add_argument(
+        "--target-successes",
+        type=int,
+        help="Keep attempting different seeds until this many successful episodes have been collected.",
+    )
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        help="Maximum attempts when --target-successes is set. Defaults to max(episodes, target_successes * 5).",
+    )
+    parser.add_argument(
+        "--save-only-successful",
+        action="store_true",
+        help="Only save npz/frame/video artifacts for successful episodes; summaries still record all attempts.",
+    )
+    parser.add_argument(
+        "--retry-each-sweep-config-until-success",
+        action="store_true",
+        help=(
+            "When collecting a sweep with --target-successes, keep retrying the current "
+            "sweep config with new seeds until it succeeds before advancing to the next config."
+        ),
+    )
     parser.add_argument("--max-steps", type=int, default=300)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--robot-init-qpos-noise", type=float, default=0.0)
@@ -1011,10 +1478,93 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--planner-joint-vel-limits", type=float, default=0.55)
     parser.add_argument("--planner-joint-acc-limits", type=float, default=0.45)
     parser.add_argument("--refine-scale", type=int, default=1)
+    parser.add_argument(
+        "--smooth-data-collection",
+        action="store_true",
+        help="Use shorter handoff approach refinements and a single continuous insert segment to reduce visible pauses.",
+    )
+    parser.add_argument(
+        "--planner-single-step-insert",
+        action="store_true",
+        help="Collapse pose-guided insertion to a single final down-insert target for both arms.",
+    )
+    parser.add_argument("--planner-pre-grasp-refine-steps", type=int)
+    parser.add_argument("--planner-grasp-refine-steps", type=int)
+    parser.add_argument("--planner-state-close-min-steps", type=int)
+    parser.add_argument(
+        "--planner-state-triggered-close",
+        dest="planner_state_triggered_close_enabled",
+        action="store_true",
+        default=None,
+    )
+    parser.add_argument(
+        "--no-planner-state-triggered-close",
+        dest="planner_state_triggered_close_enabled",
+        action="store_false",
+    )
+    parser.add_argument(
+        "--planner-local-cartesian-grasp",
+        dest="planner_local_cartesian_grasp_enabled",
+        action="store_true",
+        default=None,
+        help="Use local IK Cartesian interpolation for pre_grasp->grasp and grasp->lift.",
+    )
+    parser.add_argument(
+        "--no-planner-local-cartesian-grasp",
+        dest="planner_local_cartesian_grasp_enabled",
+        action="store_false",
+        help="Disable local IK Cartesian interpolation for grasp approach/lift.",
+    )
+    parser.add_argument("--planner-local-cartesian-step-size", type=float)
+    parser.add_argument("--planner-local-cartesian-ik-threshold", type=float)
+    parser.add_argument("--planner-local-cartesian-max-joint-delta", type=float)
+    parser.add_argument("--planner-local-cartesian-max-obj-motion", type=float)
+    parser.add_argument("--planner-local-cartesian-min-other-tcp-distance", type=float)
+    parser.add_argument("--planner-grasp-pre-approach-mode", choices=["topdown", "side"])
+    parser.add_argument("--planner-side-pre-grasp-distance", type=float)
+    parser.add_argument("--planner-side-pre-grasp-z-offset", type=float)
+    parser.add_argument("--planner-release-retract-mode", choices=["configured", "away_from_slot"])
+    parser.add_argument("--planner-release-retract-away-from-slot-distance", type=float)
+    parser.add_argument("--planner-release-retract-away-from-slot-z", type=float)
+    parser.add_argument(
+        "--planner-insert-calibrate-single-step",
+        dest="planner_insert_calibrate_single_step",
+        action="store_true",
+        default=None,
+    )
+    parser.add_argument(
+        "--no-planner-insert-calibrate-single-step",
+        dest="planner_insert_calibrate_single_step",
+        action="store_false",
+    )
+    parser.add_argument(
+        "--planner-idle-return-home-during-insert",
+        dest="planner_idle_return_home_during_insert",
+        action="store_true",
+        default=None,
+        help="After handoff release/retract, return the idle arm home while the insert arm lifts toward insertion.",
+    )
+    parser.add_argument(
+        "--no-planner-idle-return-home-during-insert",
+        dest="planner_idle_return_home_during_insert",
+        action="store_false",
+    )
+    parser.add_argument("--planner-pre-receive-refine-steps", type=int)
+    parser.add_argument("--planner-receive-refine-steps", type=int)
+    parser.add_argument("--planner-handoff-center-refine-steps", type=int)
+    parser.add_argument("--planner-post-handoff-retract-refine-steps", type=int)
+    parser.add_argument("--planner-insert-intermediate-refine-steps", type=int)
+    parser.add_argument("--planner-insert-final-refine-steps", type=int)
     parser.add_argument("--planner-place-height", type=float)
-    parser.add_argument("--planner-close-steps", type=int, default=24)
-    parser.add_argument("--planner-open-steps", type=int, default=16)
-    parser.add_argument("--return-home", dest="return_home", action="store_true", default=True)
+    parser.add_argument("--planner-close-steps", type=int)
+    parser.add_argument("--planner-open-steps", type=int)
+    parser.add_argument("--language-instruction", help="Fixed language instruction saved into metadata. Supports {slot_id} and {slot_number}.")
+    parser.add_argument(
+        "--language-instruction-template",
+        default="Pick up the phone, hand it over, and insert it into slot {slot_number}.",
+        help="Language instruction template saved into metadata. Supports {slot_id} and {slot_number}.",
+    )
+    parser.add_argument("--return-home", dest="return_home", action="store_true", default=False)
     parser.add_argument("--no-return-home", dest="return_home", action="store_false")
     parser.add_argument(
         "--home-qpos",
@@ -1025,11 +1575,163 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--disable-grasp-diversity", action="store_true")
     parser.add_argument("--prefer-rrt", action="store_true")
     parser.add_argument("--phone-insert-angle-deg", type=float)
+    parser.add_argument("--phone-insert-angle-deg-values", nargs="*", type=float)
     parser.add_argument("--phone-rotation-alphas", nargs="*", type=float)
     parser.add_argument("--two-panda-mode", choices=["support", "handoff"], default="support")
     parser.add_argument("--handoff-angle-deg", type=float, default=45.0)
-    parser.add_argument("--handoff-receive-mode", choices=["topdown_center", "upper_side", "tilted_face"], default="topdown_center")
+    parser.add_argument("--handoff-angle-deg-values", nargs="*", type=float)
+    parser.add_argument("--handoff-receive-mode", choices=["topdown_center", "upper_side", "tilted_face", "side_close", "side_approach"], default="topdown_center")
+    parser.add_argument("--planner-insert-arm-mode", choices=["auto_by_slot", "left", "right"], default="auto_by_slot")
+    parser.add_argument("--planner-center-slot-insert-arm", choices=["left", "right"], default="left")
     parser.add_argument("--upper-side-receive-fraction", type=float, default=None)
+    parser.add_argument("--upper-side-receive-fraction-values", nargs="*", type=float)
+    parser.add_argument("--planner-right-pre-grasp-height", type=float)
+    parser.add_argument("--planner-right-pre-grasp-height-values", nargs="*", type=float)
+    parser.add_argument("--planner-right-lift-height", type=float)
+    parser.add_argument("--planner-right-lift-height-values", nargs="*", type=float)
+    parser.add_argument("--planner-right-flip-z-offset", type=float)
+    parser.add_argument("--planner-right-flip-z-offset-values", nargs="*", type=float)
+    parser.add_argument("--planner-right-pre-insert-height", type=float)
+    parser.add_argument("--planner-right-pre-insert-height-values", nargs="*", type=float)
+    parser.add_argument("--planner-right-pose-guided-insert-heights", nargs="*", type=float)
+    parser.add_argument("--planner-right-post-release-lift-height", type=float)
+    parser.add_argument("--planner-right-post-release-lift-height-values", nargs="*", type=float)
+    parser.add_argument("--planner-left-pre-grasp-height", type=float)
+    parser.add_argument("--planner-left-pre-grasp-height-values", nargs="*", type=float)
+    parser.add_argument("--planner-left-lift-height", type=float)
+    parser.add_argument("--planner-left-lift-height-values", nargs="*", type=float)
+    parser.add_argument("--planner-left-flip-z-offset", type=float)
+    parser.add_argument("--planner-left-flip-z-offset-values", nargs="*", type=float)
+    parser.add_argument("--planner-left-receive-z-offset", type=float)
+    parser.add_argument("--planner-left-receive-z-offset-values", nargs="*", type=float)
+    parser.add_argument("--planner-left-receive-primary-fraction", type=float)
+    parser.add_argument("--planner-left-receive-primary-fraction-values", nargs="*", type=float)
+    parser.add_argument("--planner-left-receive-candidate-fractions", nargs="*", type=float)
+    parser.add_argument("--planner-left-receive-candidate-y-offsets", nargs="*", type=float)
+    parser.add_argument("--planner-left-receive-min-right-clearance", type=float)
+    parser.add_argument("--planner-left-receive-retry-count", type=int)
+    parser.add_argument("--planner-left-receive-retry-count-values", nargs="*", type=int)
+    parser.add_argument("--planner-left-handoff-lift-height", type=float)
+    parser.add_argument("--planner-left-handoff-lift-height-values", nargs="*", type=float)
+    parser.add_argument("--planner-left-pre-receive-distance", type=float)
+    parser.add_argument("--planner-left-pre-receive-distance-values", nargs="*", type=float)
+    parser.add_argument("--planner-left-calibrate-z-offset", type=float)
+    parser.add_argument("--planner-left-calibrate-z-offset-values", nargs="*", type=float)
+    parser.add_argument("--planner-left-pre-insert-height", type=float)
+    parser.add_argument("--planner-left-pre-insert-height-values", nargs="*", type=float)
+    parser.add_argument("--planner-left-pose-guided-insert-heights", nargs="*", type=float)
+    parser.add_argument("--planner-left-post-release-lift-height", type=float)
+    parser.add_argument("--planner-left-post-release-lift-height-values", nargs="*", type=float)
+    parser.add_argument("--planner-right-upper-side-receive-fraction", type=float)
+    parser.add_argument("--planner-right-upper-side-receive-fraction-values", nargs="*", type=float)
+    parser.add_argument("--planner-right-receive-y-offset", type=float)
+    parser.add_argument("--planner-right-receive-y-offset-values", nargs="*", type=float)
+    parser.add_argument("--planner-right-receive-z-offset", type=float)
+    parser.add_argument("--planner-right-receive-z-offset-values", nargs="*", type=float)
+    parser.add_argument("--planner-right-receive-candidate-fractions", nargs="*", type=float)
+    parser.add_argument("--planner-right-receive-candidate-y-offsets", nargs="*", type=float)
+    parser.add_argument("--planner-right-receive-min-left-clearance", type=float)
+    parser.add_argument("--planner-right-receive-min-left-clearance-values", nargs="*", type=float)
+    parser.add_argument("--planner-right-receive-settle-steps", type=int)
+    parser.add_argument("--planner-right-receive-settle-steps-values", nargs="*", type=int)
+    parser.add_argument(
+        "--planner-right-receive-use-phone-frame-orientation",
+        dest="planner_right_receive_use_phone_frame_orientation",
+        action="store_true",
+        default=None,
+    )
+    parser.add_argument(
+        "--planner-right-receive-use-topdown-orientation",
+        dest="planner_right_receive_use_phone_frame_orientation",
+        action="store_false",
+    )
+    parser.add_argument(
+        "--planner-right-receive-closed-loop",
+        dest="planner_right_receive_closed_loop_enabled",
+        action="store_true",
+        default=None,
+    )
+    parser.add_argument(
+        "--no-planner-right-receive-closed-loop",
+        dest="planner_right_receive_closed_loop_enabled",
+        action="store_false",
+    )
+    parser.add_argument("--planner-right-receive-closed-loop-attempts", type=int)
+    parser.add_argument("--planner-right-receive-closed-loop-refine-steps", type=int)
+    parser.add_argument("--planner-right-receive-closed-loop-tolerance", type=float)
+    parser.add_argument("--planner-right-receive-closed-loop-orientation-tolerance-deg", type=float)
+    parser.add_argument(
+        "--planner-other-arm-obstacle",
+        dest="planner_other_arm_obstacle_enabled",
+        action="store_true",
+        default=None,
+    )
+    parser.add_argument(
+        "--no-planner-other-arm-obstacle",
+        dest="planner_other_arm_obstacle_enabled",
+        action="store_false",
+    )
+    parser.add_argument("--planner-other-arm-obstacle-radius", type=float)
+    parser.add_argument("--planner-other-arm-obstacle-resolution", type=float)
+    parser.add_argument("--planner-other-arm-obstacle-link-stride", type=int)
+    parser.add_argument("--planner-left-retract-after-right-handoff-x", type=float)
+    parser.add_argument("--planner-left-retract-after-right-handoff-x-values", nargs="*", type=float)
+    parser.add_argument("--planner-left-retract-after-right-handoff-y", type=float)
+    parser.add_argument("--planner-left-retract-after-right-handoff-y-values", nargs="*", type=float)
+    parser.add_argument("--planner-left-retract-after-right-handoff-z", type=float)
+    parser.add_argument("--planner-left-retract-after-right-handoff-z-values", nargs="*", type=float)
+    parser.add_argument("--planner-right-handoff-lift-height", type=float)
+    parser.add_argument("--planner-right-handoff-lift-height-values", nargs="*", type=float)
+    parser.add_argument("--planner-right-retract-after-left-handoff-x", type=float)
+    parser.add_argument("--planner-right-retract-after-left-handoff-x-values", nargs="*", type=float)
+    parser.add_argument("--planner-right-retract-after-left-handoff-y", type=float)
+    parser.add_argument("--planner-right-retract-after-left-handoff-y-values", nargs="*", type=float)
+    parser.add_argument("--planner-right-retract-after-left-handoff-z", type=float)
+    parser.add_argument("--planner-right-retract-after-left-handoff-z-values", nargs="*", type=float)
+    parser.add_argument("--planner-right-pre-receive-distance", type=float)
+    parser.add_argument("--planner-right-pre-receive-distance-values", nargs="*", type=float)
+    parser.add_argument("--planner-right-calibrate-z-offset", type=float)
+    parser.add_argument("--planner-right-calibrate-z-offset-values", nargs="*", type=float)
+    parser.add_argument("--planner-right-object-align-z-offset", type=float)
+    parser.add_argument("--planner-right-object-align-z-offset-values", nargs="*", type=float)
+    parser.add_argument("--planner-right-object-align-max-angle-deg", type=float)
+    parser.add_argument("--planner-right-object-align-max-angle-deg-values", nargs="*", type=float)
+    parser.add_argument(
+        "--planner-right-align-object-pose-before-insert",
+        dest="planner_right_align_object_pose_before_insert",
+        action="store_true",
+        default=None,
+    )
+    parser.add_argument(
+        "--no-planner-right-align-object-pose-before-insert",
+        dest="planner_right_align_object_pose_before_insert",
+        action="store_false",
+    )
+    parser.add_argument("--planner-insert-orientation-tolerance-deg", type=float)
+    parser.add_argument("--planner-insert-orientation-tolerance-deg-values", nargs="*", type=float)
+    parser.add_argument("--planner-insert-vertical-tolerance-deg", type=float)
+    parser.add_argument("--planner-insert-vertical-tolerance-deg-values", nargs="*", type=float)
+    parser.add_argument("--planner-insert-slot-axis-tolerance-deg", type=float)
+    parser.add_argument("--planner-insert-slot-axis-tolerance-deg-values", nargs="*", type=float)
+    parser.add_argument("--planner-insert-slot-lateral-tolerance", type=float)
+    parser.add_argument("--planner-insert-slot-lateral-tolerance-values", nargs="*", type=float)
+    parser.add_argument("--planner-insert-readiness-correction-attempts", type=int)
+    parser.add_argument("--planner-insert-readiness-correction-attempts-values", nargs="*", type=int)
+    parser.add_argument("--planner-insert-readiness-correction-z-offset", type=float)
+    parser.add_argument("--planner-insert-readiness-correction-z-offset-values", nargs="*", type=float)
+    parser.add_argument("--planner-insert-readiness-min-height", type=float)
+    parser.add_argument("--planner-insert-readiness-min-height-values", nargs="*", type=float)
+    parser.add_argument(
+        "--planner-check-insert-readiness",
+        dest="planner_check_insert_readiness",
+        action="store_true",
+        default=None,
+    )
+    parser.add_argument(
+        "--no-planner-check-insert-readiness",
+        dest="planner_check_insert_readiness",
+        action="store_false",
+    )
     parser.add_argument("--cube-x", type=float)
     parser.add_argument("--cube-y", type=float)
     parser.add_argument("--cube-yaw", type=float)
@@ -1037,9 +1739,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cube-y-values", nargs="*", type=float)
     parser.add_argument("--cube-yaw-values", nargs="*", type=float)
     parser.add_argument("--cube-xy-values", action="append", help="Explicit cube positions as x,y pairs. Repeat this option for multiple positions, e.g. --cube-xy-values=-0.08,0.0")
+    parser.add_argument("--move-conveyor-with-cube", action="store_true", help="Move the phone support platform to the same x/y as the overridden phone pose.")
     parser.add_argument("--goal-x", type=float)
     parser.add_argument("--goal-y", type=float)
     parser.add_argument("--goal-z", type=float)
+    parser.add_argument("--slot-id", type=int, help="Phone-slot target index. For the 3-slot tray use 0, 1, or 2.")
+    parser.add_argument("--slot-ids", nargs="*", type=int, help="Sweep multiple phone-slot target indices, e.g. --slot-ids 0 1 2.")
     parser.add_argument("--goal-x-values", nargs="*", type=float)
     parser.add_argument("--goal-y-values", nargs="*", type=float)
     parser.add_argument("--goal-z-values", nargs="*", type=float)
@@ -1050,10 +1755,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--goal-grid-z", type=float, default=0.024)
     parser.add_argument(
         "--robot-qpos-offsets",
+        action="append",
         nargs="*",
         help=(
             "Comma-separated qpos offsets. Use 7 values for arm joints or 9 values "
             "for full Panda qpos, e.g. '0,0.1,0,0,0,0,0'."
+        ),
+    )
+    parser.add_argument(
+        "--robot-tcp-offsets",
+        action="append",
+        nargs="*",
+        help=(
+            "Comma-separated initial TCP position offsets. Use 4 values for "
+            "left_dx,left_dy,right_dx,right_dy or 6 values for XYZ offsets. "
+            "Repeat this option to sweep multiple initial TCP positions."
         ),
     )
     parser.add_argument(
@@ -1069,6 +1785,10 @@ def main() -> None:
     sweep_configs = make_initial_state_grid(args)
     if len(sweep_configs) > 1 and args.episodes == 1:
         args.episodes = len(sweep_configs)
+    if args.target_successes is not None and args.target_successes <= 0:
+        raise ValueError("--target-successes must be positive.")
+    if args.max_attempts is not None and args.max_attempts <= 0:
+        raise ValueError("--max-attempts must be positive.")
 
     env = build_env(args)
 
@@ -1077,11 +1797,36 @@ def main() -> None:
 
     summaries: list[dict[str, Any]] = []
     try:
-        for episode_id in trange(args.episodes, desc="Collecting nominal episodes"):
-            initial_state_config = sweep_configs[episode_id % len(sweep_configs)]
-            summary = run_episode(env, args, episode_id, initial_state_config)
+        target_successes = args.target_successes
+        max_attempts = args.episodes
+        if target_successes is not None:
+            max_attempts = args.max_attempts if args.max_attempts is not None else max(args.episodes, target_successes * 5)
+
+        successes = 0
+        saved_episode_id = 0
+        config_cursor = 0
+        for attempt_id in trange(max_attempts, desc="Collecting nominal episodes"):
+            if args.retry_each_sweep_config_until_success:
+                initial_state_config = sweep_configs[config_cursor % len(sweep_configs)]
+            else:
+                initial_state_config = sweep_configs[attempt_id % len(sweep_configs)]
+            episode_id = saved_episode_id if target_successes is not None else attempt_id
+            summary = run_episode(env, args, episode_id, initial_state_config, attempt_id=attempt_id)
             summaries.append(summary)
-            print(f"saved {summary['data_path']}")
+            if bool(summary.get("env_success")):
+                successes += 1
+                saved_episode_id += 1
+                if args.retry_each_sweep_config_until_success:
+                    config_cursor += 1
+            elif target_successes is not None and args.save_only_successful:
+                pass
+            else:
+                saved_episode_id += 1
+            print(f"attempt {attempt_id}: success={bool(summary.get('env_success'))}, saved {summary['data_path']}")
+            if target_successes is not None:
+                print(f"collected successes: {successes}/{target_successes}")
+                if successes >= target_successes:
+                    break
     finally:
         env.close()
 

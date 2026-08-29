@@ -134,7 +134,7 @@ def build_phone_actor(
 def build_phone_slot_tray(
     scene,
     name: str,
-    slot_half_length: float = 0.004,
+    slot_half_length: float = 0.008,
     slot_half_width: float = 0.028,
     slot_count: int = 3,
     wall_thickness: float = 0.004,
@@ -306,7 +306,7 @@ class PickCubeBoxMultiCamEnv(PickCubeMultiCamEnv):
 class PhoneSlotMultiCamEnv(PickCubeMultiCamEnv):
     """Phone-like cuboid pick-and-place task with a multi-slot groove tray."""
 
-    phone_half_size = (0.075, 0.025, 0.0025)
+    phone_half_size = (0.075, 0.025, 0.005)
     phone_spawn_center = (-0.08, 0.0)
     phone_spawn_half_size = 0.015
     conveyor_half_size = (0.12, 0.045, 0.010)
@@ -314,7 +314,7 @@ class PhoneSlotMultiCamEnv(PickCubeMultiCamEnv):
     slot_center = (0.06, 0.0)
     slot_count = 3
     slot_floor_thickness = 0.004
-    slot_half_length = 0.004
+    slot_half_length = 0.008
     slot_half_width = 0.028
     slot_wall_height = 0.090
     slot_wall_thickness = 0.004
@@ -340,8 +340,127 @@ class PhoneSlotMultiCamEnv(PickCubeMultiCamEnv):
     planner_two_panda_mode = "support"
     planner_handoff_angle_deg = 45.0
     planner_right_grasp_mode = "topdown_width"
-    planner_left_receive_z_offset = 0.004
+    planner_handoff_center_xy = (-0.08, 0.0)
+    planner_handoff_center_z = None
+    planner_handoff_center_closed_loop_enabled = True
+    planner_handoff_center_closed_loop_attempts = 2
+    planner_handoff_center_activation_xy_threshold = 0.010
+    planner_handoff_center_xy_tolerance = 0.004
+    planner_handoff_center_z_tolerance = 0.006
+    planner_handoff_center_refine_steps = 4
+    planner_right_pre_grasp_height = 0.080
+    planner_right_lift_height = 0.160
+    planner_right_flip_z_offset = 0.040
+    planner_right_pre_insert_height = 0.120
+    planner_right_post_release_lift_height = 0.120
+    planner_left_pre_grasp_height = 0.080
+    planner_left_lift_height = 0.160
+    planner_grasp_pre_approach_mode = "topdown"
+    planner_side_pre_grasp_distance = 0.035
+    planner_side_pre_grasp_z_offset = 0.030
+    planner_left_flip_z_offset = 0.040
+    planner_left_receive_z_offset = 0.000
+    planner_left_receive_candidate_fractions = (0.45, 0.30, 0.15, 0.08, -0.15, -0.30, -0.45)
+    planner_left_receive_primary_fraction = 0.45
+    planner_left_receive_candidate_y_offsets = (0.0,)
+    planner_left_receive_min_right_clearance = 0.015
+    planner_left_receive_retry_count = 3
     planner_left_handoff_lift_height = 0.020
+    planner_left_pre_receive_distance = 0.100
+    planner_left_calibrate_z_offset = 0.030
+    planner_left_pre_insert_height = 0.120
+    planner_left_post_release_lift_height = 0.000
+    planner_pre_grasp_refine_steps = 2
+    planner_grasp_refine_steps = 10
+    planner_local_cartesian_grasp_enabled = True
+    planner_local_cartesian_mode = "screw"
+    planner_local_cartesian_step_size = 0.003
+    planner_local_cartesian_ik_threshold = 0.003
+    planner_local_cartesian_max_joint_delta = 0.120
+    planner_local_cartesian_max_obj_motion = 0.004
+    planner_local_cartesian_min_other_tcp_distance = 0.025
+    planner_state_triggered_close_enabled = True
+    planner_state_close_min_steps = 4
+    planner_pre_receive_refine_steps = 4
+    planner_receive_refine_steps = 10
+    planner_post_handoff_retract_refine_steps = 4
+    planner_release_retract_mode = "configured"
+    planner_release_retract_away_from_slot_distance = 0.140
+    planner_release_retract_away_from_slot_z = 0.000
+    planner_parallel_post_handoff_lift = False
+    planner_idle_return_home_during_insert = False
+    planner_other_arm_obstacle_enabled = True
+    planner_other_arm_obstacle_radius = 0.025
+    planner_other_arm_obstacle_resolution = 0.010
+    planner_other_arm_obstacle_link_stride = 1
+    planner_other_arm_obstacle_link_names = (
+        "panda_link7",
+        "panda_link8",
+        "panda_hand",
+        "panda_hand_tcp",
+        "panda_leftfinger",
+        "panda_rightfinger",
+        "panda_leftfinger_pad",
+        "panda_rightfinger_pad",
+    )
+    planner_other_arm_obstacle_skip_stage_tokens = (
+        "pre_grasp",
+        "grasp",
+        "receive",
+        "close_gripper",
+        "confirm_handoff",
+        "release_handoff",
+        "vertical_clearance_after_handoff",
+        "lift_after_handoff",
+        "calibrate",
+    )
+    planner_right_receive_settle_steps = 0
+    planner_left_retract_after_right_handoff_x = -0.120
+    planner_left_retract_after_right_handoff_y = -0.080
+    planner_left_retract_after_right_handoff_z = 0.160
+    planner_right_upper_side_receive_fraction = 0.08
+    planner_right_receive_use_phone_frame_orientation = False
+    planner_right_receive_candidate_fractions = (-0.45, 0.45, -0.30, 0.30, -0.15, 0.15, 0.0)
+    planner_right_receive_primary_fraction = 0.45
+    planner_right_receive_candidate_y_offsets = (0.0,)
+    planner_right_receive_candidate_z_offsets = (0.0,)
+    planner_right_receive_retry_y_offsets = (0.0, 0.003, -0.003)
+    planner_right_receive_retry_z_offsets = (0.0, -0.002, 0.002)
+    planner_right_receive_retry_count = 1
+    planner_right_receive_closed_loop_enabled = True
+    planner_right_receive_closed_loop_attempts = 3
+    planner_right_receive_closed_loop_tolerance = 0.004
+    planner_right_receive_closed_loop_orientation_tolerance_deg = 8.0
+    planner_right_receive_closed_loop_refine_steps = 4
+    planner_right_receive_min_left_clearance = 0.030
+    planner_right_receive_y_offset = 0.000
+    planner_right_receive_z_offset = 0.000
+    planner_right_handoff_lift_height = 0.020
+    planner_right_retract_after_left_handoff_x = 0.000
+    planner_right_retract_after_left_handoff_y = 0.120
+    planner_right_retract_after_left_handoff_z = 0.140
+    planner_right_pre_receive_distance = 0.100
+    planner_right_calibrate_z_offset = 0.030
+    planner_right_align_object_pose_before_insert = True
+    planner_right_align_object_pose_during_insert = True
+    planner_right_object_align_z_offset = 0.010
+    planner_right_object_align_max_angle_deg = 20.0
+    planner_check_insert_readiness = True
+    planner_insert_orientation_tolerance_deg = 5.0
+    planner_insert_vertical_tolerance_deg = 5.0
+    planner_insert_slot_axis_tolerance_deg = 5.0
+    planner_insert_slot_lateral_tolerance = 0.006
+    planner_insert_readiness_correction_attempts = 2
+    planner_insert_readiness_correction_z_offset = 0.010
+    planner_insert_readiness_min_height = 0.040
+    planner_right_pose_guided_insert_heights = (0.080, 0.040, 0.015, 0.0)
+    planner_left_pose_guided_insert_heights = (0.080, 0.040, 0.015, 0.0)
+    planner_insert_intermediate_refine_steps = 6
+    planner_insert_final_refine_steps = 14
+    planner_insert_calibrate_single_step = False
+    planner_insert_arm_mode = "auto_by_slot"
+    planner_center_slot_insert_arm = "left"
+    planner_slot_id = None
     planner_handoff_receive_mode = "topdown_center"
     planner_upper_side_receive_fraction = 0.08
     

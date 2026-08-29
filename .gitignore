@@ -23,3 +23,10 @@ experiments/**/wandb/
 experiments/**/tensorboard/
 
 !.gitkeep
+
+# 视频与大文件（combined/ 和 demo_videos/ 之前漏挡）
+data/**/combined/
+data/**/demo_videos/
+demos/
+*.mp4
+*.h5
