@@ -8,14 +8,14 @@ Run commands from the repository root:
 
 ```bash
 conda activate maniskill_mp
-cd /home/fmc3-8/workspace/Chen/robust-recovery
+cd /home/fmc3-8/workspace/Chen/maniskill-insertion-demos
 ```
 
 The recommended control mode for motion-planning collection is `pd_joint_pos`.
 
 ## `collect_nominal_data.py`
 
-Collects nominal demonstrations using `PandaPickPlacePlanner` from `src/robust_recovery/planning/panda_motion_planner.py`. The script records observations, planned actions, rewards, done flags, infos, metadata, RGB frames, and optional videos.
+Collects nominal demonstrations using `PandaPickPlacePlanner` from `src/maniskill_insertion_demos/planning/panda_motion_planner.py`. The script records observations, planned actions, rewards, done flags, infos, metadata, RGB frames, and optional videos.
 
 ### Basic Multi-Camera PickCube
 

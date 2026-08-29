@@ -191,7 +191,7 @@ def save_rgb_frames(
 def build_env(args: argparse.Namespace):
     import gymnasium as gym
     import mani_skill.envs  # noqa: F401
-    import robust_recovery.envs.pickcube_multicam  # noqa: F401
+    import maniskill_insertion_demos.envs.pickcube_multicam  # noqa: F401
 
     kwargs: dict[str, Any] = dict(
         obs_mode=args.obs_mode,

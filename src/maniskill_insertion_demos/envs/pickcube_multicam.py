@@ -683,10 +683,10 @@ class TwoPandaPhoneSlotMultiCamEnv(PhoneSlotMultiCamEnv):
 
 def register_env() -> None:
     env_specs = [
-        ("PickCubeMultiCam-v1", "robust_recovery.envs.pickcube_multicam:PickCubeMultiCamEnv"),
-        ("PickCubeBoxMultiCam-v1", "robust_recovery.envs.pickcube_multicam:PickCubeBoxMultiCamEnv"),
-        ("PhoneSlotMultiCam-v1", "robust_recovery.envs.pickcube_multicam:PhoneSlotMultiCamEnv"),
-        ("TwoPandaPhoneSlotMultiCam-v1", "robust_recovery.envs.pickcube_multicam:TwoPandaPhoneSlotMultiCamEnv"),
+        ("PickCubeMultiCam-v1", "maniskill_insertion_demos.envs.pickcube_multicam:PickCubeMultiCamEnv"),
+        ("PickCubeBoxMultiCam-v1", "maniskill_insertion_demos.envs.pickcube_multicam:PickCubeBoxMultiCamEnv"),
+        ("PhoneSlotMultiCam-v1", "maniskill_insertion_demos.envs.pickcube_multicam:PhoneSlotMultiCamEnv"),
+        ("TwoPandaPhoneSlotMultiCam-v1", "maniskill_insertion_demos.envs.pickcube_multicam:TwoPandaPhoneSlotMultiCamEnv"),
     ]
     for env_id, entry_point in env_specs:
         try:

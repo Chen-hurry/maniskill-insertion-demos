@@ -19,11 +19,11 @@ conda activate maniskill
 Install this project in editable mode from the repository root:
 
 ```bash
-cd /home/fmc3-8/workspace/Chen/robust-recovery
+cd /home/fmc3-8/workspace/Chen/maniskill-insertion-demos
 pip install -e .
 ```
 
-Editable install means Python imports `robust_recovery` directly from this source tree. If files under `src/robust_recovery/` change, no reinstall is needed.
+Editable install means Python imports `maniskill_insertion_demos` directly from this source tree. If files under `src/maniskill_insertion_demos/` change, no reinstall is needed.
 
 For development and tests, install the optional dev dependencies:
 

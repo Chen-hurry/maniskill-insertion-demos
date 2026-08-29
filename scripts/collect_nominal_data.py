@@ -13,7 +13,7 @@ import numpy as np
 import sapien
 from tqdm import trange
 
-from robust_recovery.planning.panda_motion_planner import (
+from maniskill_insertion_demos.planning.panda_motion_planner import (
     PandaPickPlacePlanner,
     PhoneSlotPlanner,
     SingleAgentControlAdapter,
@@ -1175,7 +1175,7 @@ class RecorderEnv:
 def build_env(args: argparse.Namespace):
     import gymnasium as gym
     import mani_skill.envs  # noqa: F401
-    import robust_recovery.envs.pickcube_multicam  # noqa: F401
+    import maniskill_insertion_demos.envs.pickcube_multicam  # noqa: F401
 
     kwargs: dict[str, Any] = dict(
         obs_mode=args.obs_mode,

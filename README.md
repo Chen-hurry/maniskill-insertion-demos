@@ -1,4 +1,4 @@
-# robust-recovery
+# maniskill-insertion-demos
 
 This repository is a working scaffold for robust robotic manipulation recovery experiments on ManiSkill. The current implementation focuses on Panda `PickCube` data collection with multi-camera observations, scripted motion-planning demonstrations, and a fine placement scene where a red cube is inserted into a small 3x3 tray.
 
@@ -8,7 +8,7 @@ This repository is a working scaffold for robust robotic manipulation recovery e
 
 The active workflow is:
 
-1. Use custom ManiSkill environments in `src/robust_recovery/envs/`.
+1. Use custom ManiSkill environments in `src/maniskill_insertion_demos/envs/`.
 2. Collect nominal pick-and-place demonstrations with `scripts/collect_nominal_data.py`.
 3. Save `rgb+state` observations, planned actions, rewards, infos, metadata, RGB frames, and videos.
 4. Sweep cube positions, goal positions, robot initial offsets, or a built-in 3x3 goal grid.
@@ -31,7 +31,7 @@ Use the existing ManiSkill conda environment:
 
 ```bash
 conda activate maniskill_mp
-cd /home/fmc3-8/workspace/Chen/robust-recovery
+cd /home/fmc3-8/workspace/Chen/maniskill-insertion-demos
 ```
 
 Collect one 3x3 tray sweep. With `--goal-grid-3x3`, `--episodes 1` automatically expands to 9 episodes:
@@ -113,11 +113,11 @@ Recommended diversity sources for rule-based collection:
 ## Repository Layout
 
 ```text
-robust-recovery/
+maniskill-insertion-demos/
 ├── data/                        # Collected datasets and diagnostics
 ├── docs/                        # Data-collection notes
 ├── scripts/                     # Collection, filtering, and visualization entry points
-├── src/robust_recovery/         # Python package code
+├── src/maniskill_insertion_demos/         # Python package code
 │   ├── envs/                    # Custom ManiSkill environments
 │   └── planning/                # Panda motion-planning wrapper
 ├── tests/                       # Helper unit tests
@@ -128,8 +128,8 @@ robust-recovery/
 
 - `scripts/collect_nominal_data.py`: motion-planning data collector.
 - `scripts/test_box_collision_drop.py`: collision/free-drop diagnostic script.
-- `src/robust_recovery/envs/pickcube_multicam.py`: custom multi-camera and 3x3 tray environments.
-- `src/robust_recovery/planning/panda_motion_planner.py`: high-level Panda pick-and-place planner.
+- `src/maniskill_insertion_demos/envs/pickcube_multicam.py`: custom multi-camera and 3x3 tray environments.
+- `src/maniskill_insertion_demos/planning/panda_motion_planner.py`: high-level Panda pick-and-place planner.
 - `scripts/filter_idle_dataset.py`: drop idle/near-static frames from a collected dataset.
 - `scripts/evaluate_trajectory_diversity.py`: report trajectory diversity across episodes.
 - `scripts/build_pi05_dataset_demo_video.py`: multi-camera demo video with PI0.5 field overlay.

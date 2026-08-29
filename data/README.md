@@ -101,7 +101,7 @@ The stable handoff logic currently includes:
 Run from the repository root:
 
 ```bash
-cd /home/fmc3-8/workspace/Chen/robust-recovery
+cd /home/fmc3-8/workspace/Chen/maniskill-insertion-demos
 
 conda run -n maniskill_mp python scripts/collect_nominal_data.py \
   --env-id TwoPandaPhoneSlotMultiCam-v1 \
@@ -178,7 +178,7 @@ data/nominal/pi05_phone_27_success_video/viewer_episode_000000.html
 Open it locally on the server with:
 
 ```bash
-xdg-open /home/fmc3-8/workspace/Chen/robust-recovery/data/nominal/pi05_phone_27_success_video/viewer_episode_000000.html
+xdg-open /home/fmc3-8/workspace/Chen/maniskill-insertion-demos/data/nominal/pi05_phone_27_success_video/viewer_episode_000000.html
 ```
 
 The HTML viewer shows four synchronized videos:
@@ -233,13 +233,13 @@ done
 From the local computer, download one demo video with `scp`:
 
 ```bash
-scp -F /dev/null fmc3-8@100.87.220.19:/home/fmc3-8/workspace/Chen/robust-recovery/data/nominal/pi05_phone_27_success_video/demo_videos/episode_000000_pi05_demo.mp4 .
+scp -F /dev/null fmc3-8@100.87.220.19:/home/fmc3-8/workspace/Chen/maniskill-insertion-demos/data/nominal/pi05_phone_27_success_video/demo_videos/episode_000000_pi05_demo.mp4 .
 ```
 
 If the local machine is on the same LAN, this may also work:
 
 ```bash
-scp -F /dev/null fmc3-8@192.168.1.104:/home/fmc3-8/workspace/Chen/robust-recovery/data/nominal/pi05_phone_27_success_video/demo_videos/episode_000000_pi05_demo.mp4 .
+scp -F /dev/null fmc3-8@192.168.1.104:/home/fmc3-8/workspace/Chen/maniskill-insertion-demos/data/nominal/pi05_phone_27_success_video/demo_videos/episode_000000_pi05_demo.mp4 .
 ```
 
 The final `.` means "save to the current local directory."

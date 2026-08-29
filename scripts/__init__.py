@@ -1,1 +1,1 @@
-"""Command-line scripts for robust-recovery."""
+"""Command-line scripts for maniskill-insertion-demos."""

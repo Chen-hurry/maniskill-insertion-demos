@@ -154,7 +154,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     import gymnasium as gym
     import mani_skill.envs  # noqa: F401
-    import robust_recovery.envs.pickcube_multicam  # noqa: F401
+    import maniskill_insertion_demos.envs.pickcube_multicam  # noqa: F401
 
     args = parse_args()
     env = gym.make(
