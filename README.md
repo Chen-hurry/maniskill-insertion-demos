@@ -114,16 +114,14 @@ Recommended diversity sources for rule-based collection:
 
 ```text
 robust-recovery/
-├── configs/                     # Experiment and method configs
 ├── data/                        # Collected datasets and diagnostics
-├── docs/                        # Research notes and design documents
-├── scripts/                     # Data collection and diagnostic entry points
+├── docs/                        # Data-collection notes
+├── scripts/                     # Collection, filtering, and visualization entry points
 ├── src/robust_recovery/         # Python package code
 │   ├── envs/                    # Custom ManiSkill environments
 │   └── planning/                # Panda motion-planning wrapper
-├── experiments/                 # Experiment outputs and overrides
-├── results/                     # Logs, figures, videos, and tables
-└── checkpoints/                 # Trained models and detectors
+├── tests/                       # Helper unit tests
+└── results/                     # Smoke-test outputs
 ```
 
 ## Important Files
@@ -132,6 +130,10 @@ robust-recovery/
 - `scripts/test_box_collision_drop.py`: collision/free-drop diagnostic script.
 - `src/robust_recovery/envs/pickcube_multicam.py`: custom multi-camera and 3x3 tray environments.
 - `src/robust_recovery/planning/panda_motion_planner.py`: high-level Panda pick-and-place planner.
+- `scripts/filter_idle_dataset.py`: drop idle/near-static frames from a collected dataset.
+- `scripts/evaluate_trajectory_diversity.py`: report trajectory diversity across episodes.
+- `scripts/build_pi05_dataset_demo_video.py`: multi-camera demo video with PI0.5 field overlay.
+- `scripts/build_pi05_dataset_viewer.py`: dataset inspection viewer.
 - `docs/maniskill_data_collection.md`: longer notes for the ManiSkill data-collection workflow.
 
 ## Notes

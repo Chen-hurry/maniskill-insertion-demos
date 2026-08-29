@@ -1,9 +1,0 @@
-name: drawer
-task_id: OpenDrawer-v1
-max_episode_steps: 250
-observation_mode: rgbd
-control_mode: pd_ee_delta_pose
-success_threshold: 0.8
-anomalies:
-  enabled: true
-  types: [handle_occlusion, friction_change, pose_perturbation]
