@@ -1,8 +1,23 @@
 # maniskill-insertion-demos
 
-This repository is a working scaffold for robust robotic manipulation recovery experiments on ManiSkill. The current implementation focuses on Panda `PickCube` data collection with multi-camera observations, scripted motion-planning demonstrations, and a fine placement scene where a red cube is inserted into a small 3x3 tray.
+Scripted motion-planning demonstrations of **tight-clearance insertion** in [ManiSkill](https://github.com/haosulab/ManiSkill), collected as training data for PI0.5 / VLA policies.
 
-本仓库用于鲁棒机器人操作恢复实验。目前主要围绕 ManiSkill 中的 Panda `PickCube` 任务，支持多相机采集、运动规划示范数据、固定目标点、3x3 精细盒子场景，以及碰撞/放置诊断脚本。
+Two tasks share one collection pipeline:
+
+- **Phone slot** (`TwoPandaPhoneSlotMultiCam-v1`) — the right Panda grasps a phone, flips it to a 45 degree handoff pose, the left Panda receives it with an `upper_side` grasp, calibrates to upright, and inserts it into one of three slots.
+- **3x3 tray** (`PickCubeBoxMultiCam-v1`) — a 4cm cube into a 4.2cm cell, leaving about 1mm of clearance per side.
+
+本仓库在 ManiSkill 仿真中用规则运动规划采集紧公差插入的示范数据，产出用于 PI0.5 / VLA 训练。包含双臂 Panda 手机插槽交接与 3x3 托盘精插两个任务，共用同一套采集管线。
+
+## Demo
+
+Two-Panda handoff and phone-slot insertion, four camera views plus the per-frame PI0.5 training fields (4x speed):
+
+![Two-Panda phone-slot insertion demo](docs/media/phone_slot_insertion_demo.gif)
+
+Under the camera grid every frame carries the fields a PI0.5 / VLA policy is trained on: the language instruction, slot id, reward and done flag, the phone pose, both arm TCP poses, and the relative vectors from each TCP to the phone and from the phone to the goal.
+
+Full-resolution clip (44s, 20fps): [`docs/media/phone_slot_insertion_demo.mp4`](docs/media/phone_slot_insertion_demo.mp4)
 
 ## Current Workflow
 

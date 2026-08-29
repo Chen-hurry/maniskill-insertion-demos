@@ -30,3 +30,8 @@ data/**/demo_videos/
 demos/
 *.mp4
 *.h5
+
+# README 演示素材是例外
+!docs/media/
+!docs/media/*.gif
+!docs/media/*.mp4
