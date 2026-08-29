@@ -19,7 +19,7 @@ conda activate maniskill
 Install this project in editable mode from the repository root:
 
 ```bash
-cd /home/fmc3-8/workspace/Chen/maniskill-insertion-demos
+cd /path/to/maniskill-insertion-demos
 pip install -e .
 ```
 

@@ -31,7 +31,7 @@ Use the existing ManiSkill conda environment:
 
 ```bash
 conda activate maniskill_mp
-cd /home/fmc3-8/workspace/Chen/maniskill-insertion-demos
+cd /path/to/maniskill-insertion-demos
 ```
 
 Collect one 3x3 tray sweep. With `--goal-grid-3x3`, `--episodes 1` automatically expands to 9 episodes:

@@ -8,7 +8,7 @@ Run commands from the repository root:
 
 ```bash
 conda activate maniskill_mp
-cd /home/fmc3-8/workspace/Chen/maniskill-insertion-demos
+cd /path/to/maniskill-insertion-demos
 ```
 
 The recommended control mode for motion-planning collection is `pd_joint_pos`.
